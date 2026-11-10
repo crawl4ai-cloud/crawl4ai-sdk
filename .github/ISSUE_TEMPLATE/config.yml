@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security problem
+    url: https://github.com/crawl4ai-cloud/crawl4ai-sdk/security/advisories/new
+    about: Report it privately, never in a public issue.
+  - name: API docs
+    url: https://api.crawl4ai.com/docs
+    about: How the API works.
