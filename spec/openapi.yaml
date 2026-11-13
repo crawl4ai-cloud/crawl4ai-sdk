@@ -1,0 +1,872 @@
+openapi: 3.1.0
+info:
+  title: Crawl4AI Cloud API
+  version: "2026-11-13"
+  summary: Turn any web page into clean, LLM-ready data.
+  description: |
+    The public Crawl4AI Cloud API, as the SDKs in this repository call it.
+    Written by hand from the public docs (https://crawl4ai.com/docs/ and https://crawl4ai.com/llms.txt).
+    When this file and the docs disagree, the docs win: fix this file.
+
+    Every call costs credits (1 credit = $0.001). Every response carries the cost in the
+    `x-c4-cost`, `x-c4-balance` and `x-c4-allowance-left` headers, except `/scrape/batch`,
+    which puts the cost on each line instead.
+
+    Errors are JSON: `{"error": "<code>", "message": "...", "actions": {...}}`.
+    `message` is written for people and can be shown as it is.
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+  contact:
+    url: https://crawl4ai.com
+externalDocs:
+  url: https://crawl4ai.com/docs/
+servers:
+  - url: https://api.crawl4ai.com
+security:
+  - bearer: []
+  - apiKey: []
+
+paths:
+  /scrape:
+    post:
+      operationId: scrape
+      summary: One page to Markdown and HTML.
+      description: |
+        Fetches one URL and returns clean Markdown and/or HTML. The service picks the engine.
+        A PDF URL returns the PDF's text. Most pages take 1 to 2 s; a page that needs a real
+        browser takes up to 90 s, so clients wait up to 120 s. A cancelled call is not charged.
+        No error status is charged.
+      externalDocs:
+        url: https://crawl4ai.com/docs/scrape/
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - type: object
+                  required: [url]
+                  properties:
+                    url:
+                      type: string
+                      format: uri
+                      description: The page to scrape. A public http or https URL.
+                - $ref: "#/components/schemas/ScrapeOptions"
+      responses:
+        "200":
+          description: The page.
+          headers:
+            x-c4-cost: { $ref: "#/components/headers/Cost" }
+            x-c4-balance: { $ref: "#/components/headers/Balance" }
+            x-c4-allowance-left: { $ref: "#/components/headers/AllowanceLeft" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ScrapeResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402": { $ref: "#/components/responses/PaymentRequired" }
+        "403":
+          description: |
+            The site refused every attempt. `reason` is `blocked` (every attempt got the site's
+            block page) or `login-wall` (the page needs a login or a payment). Not charged.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ScrapeFailure" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/ServerError" }
+        "502":
+          description: |
+            The site gave no usable answer. `reason` is `no-answer` (no answer or an empty page;
+            a retry rarely helps) or `origin-error:<n>` (the site answered status `<n>`, also in
+            `origin_status`). Not charged.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ScrapeFailure" }
+        "503":
+          description: "`reason` is `busy`: no browser was free. Send the same request again in a few seconds."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ScrapeFailure" }
+
+  /scrape/batch:
+    post:
+      operationId: scrapeBatch
+      summary: Up to 50 pages in one call, each result streamed as it is ready.
+      description: |
+        The response is NDJSON (one JSON object per line). One `ScrapeBatchLine` per URL, in the
+        order the pages finish, then one `ScrapeBatchSummary` line with the cost of the whole batch.
+        This response has no `x-c4-cost` header: the cost is on each line.
+      externalDocs:
+        url: https://crawl4ai.com/docs/scrape-batch/
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - type: object
+                  required: [urls]
+                  properties:
+                    urls:
+                      type: array
+                      items: { type: string, format: uri }
+                      minItems: 1
+                      maxItems: 50
+                - $ref: "#/components/schemas/ScrapeOptions"
+      responses:
+        "200":
+          description: One line per URL, then the summary line.
+          content:
+            application/x-ndjson:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ScrapeBatchLine"
+                  - $ref: "#/components/schemas/ScrapeBatchSummary"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402": { $ref: "#/components/responses/PaymentRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /scrape/jobs:
+    post:
+      operationId: startScrapeJob
+      summary: Up to 10,000 pages in the background. Returns a job id.
+      description: |
+        Every URL is charged the job's flat `unit_cost`. URLs that never got an answer are
+        refunded when the job ends. A job can be read from any region.
+      externalDocs:
+        url: https://crawl4ai.com/docs/scrape-jobs/
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - type: object
+                  required: [urls]
+                  properties:
+                    urls:
+                      type: array
+                      items: { type: string, format: uri }
+                      minItems: 1
+                      maxItems: 10000
+                - $ref: "#/components/schemas/ScrapeOptions"
+      responses:
+        "200":
+          description: The job was accepted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [job_id, status]
+                properties:
+                  job_id:
+                    type: string
+                    description: Starts with `j_`.
+                  status: { $ref: "#/components/schemas/ScrapeJobStatus" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402": { $ref: "#/components/responses/PaymentRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /scrape/jobs/{id}:
+    get:
+      operationId: getScrapeJob
+      summary: The job's status, counts and cost.
+      externalDocs:
+        url: https://crawl4ai.com/docs/scrape-jobs/
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+        - name: full
+          in: query
+          description: "`1` adds the detail of every URL."
+          schema: { type: integer, enum: [0, 1], default: 0 }
+      responses:
+        "200":
+          description: The job.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ScrapeJob" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /scrape/jobs/{id}/results:
+    get:
+      operationId: getScrapeJobResults
+      summary: The job's results, 500 lines per page.
+      description: |
+        NDJSON, one line per URL. To read the next page, pass `after` = the number of lines
+        read so far. An empty page means there are no more lines.
+      externalDocs:
+        url: https://crawl4ai.com/docs/scrape-jobs/
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+        - name: after
+          in: query
+          description: Skip this many lines.
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        "200":
+          description: Up to 500 lines.
+          content:
+            application/x-ndjson:
+              schema: { $ref: "#/components/schemas/ScrapeBatchLine" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /scrape/jobs/{id}/retry:
+    post:
+      operationId: retryScrapeJob
+      summary: Run the job's failed URLs again.
+      externalDocs:
+        url: https://crawl4ai.com/docs/scrape-jobs/
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: The failed URLs are queued again.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ScrapeJob" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402": { $ref: "#/components/responses/PaymentRequired" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /search:
+    get:
+      operationId: search
+      summary: Web search, ranked and cleaned for reading.
+      description: For a direct answer to a question, use `/answer`.
+      externalDocs:
+        url: https://crawl4ai.com/docs/search/
+      parameters:
+        - $ref: "#/components/parameters/Query512"
+        - name: rich
+          in: query
+          description: "`1` adds the `rich` block: follow-up questions, related queries, an entity card, videos, news and more. Slightly slower."
+          schema: { type: integer, enum: [0, 1], default: 0 }
+      responses:
+        "200":
+          description: The results.
+          headers:
+            x-c4-cost: { $ref: "#/components/headers/Cost" }
+            x-c4-balance: { $ref: "#/components/headers/Balance" }
+            x-c4-allowance-left: { $ref: "#/components/headers/AllowanceLeft" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SearchResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402": { $ref: "#/components/responses/PaymentRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /serp:
+    get:
+      operationId: serp
+      summary: Google's results page as data (beta).
+      description: |
+        True ranks, every block Google showed, and the place the page was localised to.
+        1 credit per Google page fetched live; a page from the cache costs half.
+        `POST /serp` takes the same fields as a JSON body; the SDKs use `GET`.
+      externalDocs:
+        url: https://crawl4ai.com/docs/serp/
+      parameters:
+        - $ref: "#/components/parameters/Query512"
+        - name: country
+          in: query
+          description: Two letters. The country Google serves the page for.
+          schema: { type: string, default: us }
+        - name: language
+          in: query
+          description: The language of Google's page.
+          schema: { type: string, default: en }
+        - name: location
+          in: query
+          description: A city or region, for example `Austin, TX`. An unknown name answers `400` with the closest names in `closest`.
+          schema: { type: string }
+        - name: num
+          in: query
+          description: Results per page, a multiple of 10. `num=30` fetches Google pages 1 to 3.
+          schema: { type: integer, minimum: 10, maximum: 100, multipleOf: 10, default: 10 }
+        - name: page
+          in: query
+          description: Counts in steps of `num`. `num=20&page=2` is Google pages 3 and 4. Never past Google page 30.
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: device
+          in: query
+          schema: { type: string, default: desktop, description: "`desktop` is the only value today." }
+        - name: time
+          in: query
+          description: Only results from this past period.
+          schema: { $ref: "#/components/schemas/OpenString", examples: [hour, day, week, month, year] }
+        - name: fresh
+          in: query
+          description: "`1` skips the cache and fetches live, at the live price."
+          schema: { type: integer, enum: [0, 1], default: 0 }
+        - name: source
+          in: query
+          description: "`auto`: any live Google result. `google`: only `gg`, which also returns the AI Overview; when it cannot answer, the call ends with a `503` and costs nothing."
+          schema: { $ref: "#/components/schemas/OpenString", default: auto, examples: [auto, google] }
+        - name: engine
+          in: query
+          schema: { type: string, default: google, description: "`google` is the only value today." }
+        - name: type
+          in: query
+          schema: { type: string, default: organic, description: "`organic` is the only value today." }
+      responses:
+        "200":
+          description: The results page. No results is a `200` with an empty `results` list.
+          headers:
+            x-c4-cost: { $ref: "#/components/headers/Cost" }
+            x-c4-balance: { $ref: "#/components/headers/Balance" }
+            x-c4-allowance-left: { $ref: "#/components/headers/AllowanceLeft" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SerpResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402": { $ref: "#/components/responses/PaymentRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/ServerError" }
+        "503": { $ref: "#/components/responses/ServerError" }
+
+  /answer:
+    get:
+      operationId: answer
+      summary: A direct answer to a question, with sources (experimental).
+      description: |
+        When there is no answer, `answered` is `false` and the call costs nothing.
+        1 credit for an answer found directly, 3 when the model writes it.
+        Experimental: the shape may still change.
+      externalDocs:
+        url: https://crawl4ai.com/docs/answer/
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: The question, or a whole prompt. A long prompt is turned into a search query.
+          schema: { type: string, maxLength: 4000 }
+        - name: schema
+          in: query
+          description: |
+            A JSON Schema the answer must match; `answer.text` is then JSON of that shape.
+            Sent as the schema's JSON text in the query string.
+          content:
+            application/json:
+              schema: { type: object }
+        - name: deep
+          in: query
+          description: "`1`: read a couple of pages when needed. `0`: only an answer that is readily available."
+          schema: { type: integer, enum: [0, 1], default: 1 }
+      responses:
+        "200":
+          description: The answer, or `answered` = `false`.
+          headers:
+            x-c4-cost: { $ref: "#/components/headers/Cost" }
+            x-c4-balance: { $ref: "#/components/headers/Balance" }
+            x-c4-allowance-left: { $ref: "#/components/headers/AllowanceLeft" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AnswerResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402": { $ref: "#/components/responses/PaymentRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /extract:
+    post:
+      operationId: extract
+      summary: Structured JSON from a page.
+      description: |
+        Give `url` (the page is fetched for you) or `content` (your own text, Markdown or HTML),
+        plus `instruction` and/or `schema`. Long pages are split and joined again for you.
+      externalDocs:
+        url: https://crawl4ai.com/docs/extract/
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                url:
+                  type: string
+                  format: uri
+                  description: The page to read.
+                content:
+                  type: string
+                  description: Your own text, Markdown or HTML, instead of `url`.
+                instruction:
+                  type: string
+                  description: What to pull out, in plain English.
+                schema:
+                  type: object
+                  description: A JSON Schema each returned record must match.
+                example:
+                  description: A sample of the shape you want (the structure, not the values).
+      responses:
+        "200":
+          description: The extracted data.
+          headers:
+            x-c4-cost: { $ref: "#/components/headers/Cost" }
+            x-c4-balance: { $ref: "#/components/headers/Balance" }
+            x-c4-allowance-left: { $ref: "#/components/headers/AllowanceLeft" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExtractResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402": { $ref: "#/components/responses/PaymentRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+      description: "`Authorization: Bearer sk_live_...`. Get a key at https://crawl4ai.com."
+    apiKey:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: The same key in the `x-api-key` header. The SDKs use `bearer`.
+
+  parameters:
+    JobId:
+      name: id
+      in: path
+      required: true
+      description: The `job_id` from `POST /scrape/jobs`.
+      schema: { type: string }
+    Query512:
+      name: q
+      in: query
+      required: true
+      description: The search query.
+      schema: { type: string, maxLength: 512 }
+
+  headers:
+    Cost:
+      description: What this call cost, in credits.
+      schema: { type: string, examples: ["0.500"] }
+    Balance:
+      description: The account's credits after this call. The exact running figure.
+      schema: { type: string }
+    AllowanceLeft:
+      description: Credits left under this month's plan allowance.
+      schema: { type: string }
+
+  responses:
+    BadRequest:
+      description: A field is wrong. `error` names the problem. Not charged.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: No key, or a key that is not valid. The body can be empty.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    PaymentRequired:
+      description: |
+        Out of credit. `error` is `no_credit` (zero credit), `plan_cap` (this month's plan
+        allowance is used; it resets on the 1st), `spend_cap` (the account's own monthly cap)
+        or `plan_needed` (the action needs a plan). `message` can be shown as it is.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: No such resource, or `not_available` (not open to this account).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RateLimited:
+      description: |
+        Over the plan's requests a minute or calls at a time. `message` can be shown as it is;
+        `actions.subscribe` links to a plan that lifts the limit.
+      headers:
+        X-RateLimit-Limit:
+          schema: { type: integer }
+        X-RateLimit-Remaining:
+          schema: { type: integer }
+        X-RateLimit-Reset:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ServerError:
+      description: Our fault, or the service was busy. Not charged. Safe to retry.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    OpenString:
+      type: string
+      description: |
+        One of the listed values today. The server may add values, so clients must accept
+        any string here.
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          description: A short code, for example `no_credit`.
+        message:
+          type: string
+          description: Written for people. Can be shown as it is.
+        actions:
+          type: object
+          description: Links that fix the problem, for example `subscribe`.
+          additionalProperties: true
+
+    ScrapeOptions:
+      type: object
+      properties:
+        format:
+          description: What content comes back.
+          allOf: [{ $ref: "#/components/schemas/OpenString" }]
+          default: both
+          examples: [both, md, html]
+        proxy:
+          description: |
+            `extra` tries harder when a site refuses the standard request. A page served that
+            way costs 4x the standard price.
+          allOf: [{ $ref: "#/components/schemas/OpenString" }]
+          default: standard
+          examples: [standard, extra]
+        country:
+          type: string
+          description: Two letters. The country the page is fetched from, for example `us`.
+          minLength: 2
+          maxLength: 2
+        parse:
+          description: |
+            Also return structured page data. `true` for all of it, or pick some:
+            `{"links": true, "media": true, "metadata": true, "tables": true}`.
+          oneOf:
+            - type: boolean
+            - type: object
+              properties:
+                links: { type: boolean }
+                media: { type: boolean }
+                metadata: { type: boolean }
+                tables: { type: boolean }
+        engine:
+          description: |
+            `browser-light` or `browser` starts at that engine. Always a fresh fetch, slower, and
+            priced at the engine that serves it. Use it only when `auto` misses content.
+          allOf: [{ $ref: "#/components/schemas/OpenString" }]
+          default: auto
+          examples: [auto, browser-light, browser]
+
+    ScrapeResult:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+          description: "`true` when the page came back."
+        markdown:
+          type: string
+          description: The page as clean Markdown (with `format` `md` or `both`).
+        html:
+          type: string
+          description: The page's HTML (with `format` `html` or `both`).
+        engine:
+          description: What served the page.
+          allOf: [{ $ref: "#/components/schemas/OpenString" }]
+          examples: [cache, archive, fetch, browser-light, browser, browser-heavy]
+        cache:
+          type: string
+          description: Where the answer came from when it was not fetched fresh, for example `archive`.
+        reason:
+          type: string
+        ms:
+          type: integer
+          description: The time taken, in milliseconds.
+        bytes:
+          type: integer
+          description: The size of the page read.
+        text_len:
+          type: integer
+          description: Characters of text on the page.
+        content_hash:
+          type: string
+          description: SHA-256 of the content. The same page gives the same hash.
+        exit:
+          type: string
+          description: "`isp:<cc>` or `residential:<cc>` when a proxy carried the request."
+        ladder:
+          type: array
+          description: The steps tried, in order.
+          items:
+            type: object
+            properties:
+              step: { type: string }
+              outcome: { type: string }
+              ms: { type: integer }
+        usage: { $ref: "#/components/schemas/Usage" }
+
+    ScrapeFailure:
+      type: object
+      required: [ok, reason]
+      properties:
+        ok:
+          type: boolean
+          const: false
+        reason:
+          type: string
+          description: "`blocked`, `login-wall`, `no-answer`, `no-answer:empty-render`, `origin-error:<n>` or `busy`."
+        origin_status:
+          type: integer
+          description: The site's own status, with `origin-error:<n>`.
+
+    ScrapeBatchLine:
+      type: object
+      required: [url, ok]
+      properties:
+        url: { type: string }
+        ok: { type: boolean }
+        result: { $ref: "#/components/schemas/ScrapeResult" }
+        error:
+          type: string
+          description: Why the page failed, when `ok` is `false`.
+        cost:
+          type: string
+          description: What this URL cost, in credits.
+          examples: ["0.500"]
+        effort:
+          type: integer
+          description: How much work the page needed. Sets the price.
+
+    ScrapeBatchSummary:
+      type: object
+      required: [summary]
+      properties:
+        summary:
+          type: object
+          properties:
+            cost:
+              type: string
+              description: What the whole batch cost, in credits.
+            priced:
+              type: integer
+              description: URLs that were charged.
+            urls:
+              type: integer
+              description: URLs in the batch.
+
+    ScrapeJobStatus:
+      description: The job's state. `done` when every URL has finished.
+      allOf: [{ $ref: "#/components/schemas/OpenString" }]
+      examples: [pending, done]
+
+    ScrapeJob:
+      type: object
+      required: [status]
+      properties:
+        job_id: { type: string }
+        status: { $ref: "#/components/schemas/ScrapeJobStatus" }
+        usage:
+          type: object
+          properties:
+            units:
+              type: integer
+              description: URLs charged.
+            credited:
+              type: integer
+              description: URLs refunded because they never got an answer.
+            net:
+              type: integer
+              description: "`units` minus `credited`."
+            unit_cost:
+              type: string
+              description: The flat price of one URL, in credits.
+            cost:
+              type: string
+              description: What the job cost, in credits.
+      description: Also carries the counts of pending, done and failed URLs.
+
+    SearchResult:
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              title: { type: string }
+              url:
+                type: string
+                description: The page itself, not a redirect.
+              snippet:
+                type: string
+                description: Can be empty.
+              source:
+                description: "`gg` and `gs`: a live web result. `index`: from the Crawl4AI index."
+                allOf: [{ $ref: "#/components/schemas/OpenString" }]
+                examples: [gg, gs, index]
+        rich:
+          type: object
+          description: Only with `rich=1`. Each key appears only when that block was on the page.
+          properties:
+            follow_up_questions: { type: array, items: { type: string } }
+            related_queries: { type: array, items: { type: string } }
+            entity:
+              type: object
+              properties:
+                title: { type: string }
+                subtitle: { type: string }
+            videos: { type: array, items: { $ref: "#/components/schemas/Link" } }
+            news: { type: array, items: { $ref: "#/components/schemas/Link" } }
+            discussions: { type: array, items: {} }
+            did_you_mean: { type: string }
+
+    SerpResult:
+      type: object
+      required: [results]
+      description: |
+        Each block Google showed is also a top-level key (`ai_overview`, `people_also_ask`,
+        `related_searches`, `knowledge_panel`, `top_stories`, `local_pack`, `ads_top`,
+        `ads_bottom`, `short_videos`, `images`, `latest_from_site`, `perspectives`, `apps`).
+        A block Google did not show is absent, never `null`.
+      properties:
+        search:
+          type: object
+          description: The settings the page was fetched with.
+          properties:
+            q: { type: string }
+            engine: { type: string }
+            type: { type: string }
+            country: { type: string }
+            language: { type: string }
+            location: { type: [string, "null"] }
+            device: { type: string }
+            page: { type: integer }
+            num: { type: integer }
+            time: { type: [string, "null"] }
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              position:
+                type: integer
+                description: The rank among organic results only, from 1.
+              position_absolute:
+                type: integer
+                description: The rank among every block on the page.
+              title: { type: string }
+              url: { type: string }
+              domain:
+                type: string
+                description: The host of `url`, lower case, without `www.`.
+              displayed_url: { type: string }
+              snippet: { type: string }
+              date:
+                type: string
+                description: The date Google shows, as shown.
+              sitelinks: { type: array, items: { $ref: "#/components/schemas/Link" } }
+        blocks:
+          type: array
+          description: The names of the blocks on the page, in page order.
+          items: { type: string }
+        total_results:
+          type: integer
+          description: Google's own estimate. Absent when Google showed none.
+        source:
+          allOf: [{ $ref: "#/components/schemas/OpenString" }]
+          examples: [gg, gs, mixed]
+        empty_reason:
+          description: Only when `results` is empty.
+          allOf: [{ $ref: "#/components/schemas/OpenString" }]
+          examples: [google_no_results, rescue_no_results]
+        cached:
+          type: boolean
+          description: "`true` when every page came from the cache."
+        age_s:
+          type: integer
+          description: The age of the oldest cached page, in seconds.
+        pages:
+          type: object
+          properties:
+            asked: { type: integer }
+            got: { type: integer }
+            missing:
+              type: array
+              description: The page numbers that could not be fetched.
+              items: { type: integer }
+        ai_overview:
+          type: object
+          properties:
+            text: { type: string }
+            sources: { type: array, items: { $ref: "#/components/schemas/Link" } }
+        people_also_ask: { type: array, items: { type: string } }
+        related_searches: { type: array, items: { type: string } }
+        ms: { type: integer }
+
+    AnswerResult:
+      type: object
+      required: [answered]
+      properties:
+        answered:
+          type: boolean
+          description: "`false` when there is no direct answer yet. Use `/search` for links."
+        answer:
+          type: object
+          properties:
+            text:
+              type: string
+              description: The answer. JSON text when the question asked for JSON or a `schema` was given.
+            source:
+              description: "`google_ai_overview` or `google_ai_mode`: the web's own answer, word for word. `crawl4ai`: our model wrote it."
+              allOf: [{ $ref: "#/components/schemas/OpenString" }]
+              examples: [google_ai_overview, google_ai_mode, crawl4ai]
+            sources: { type: array, items: { $ref: "#/components/schemas/Link" } }
+        query:
+          type: string
+          description: The search query used for the question.
+        experimental: { type: boolean }
+
+    ExtractResult:
+      type: object
+      required: [ok]
+      properties:
+        ok: { type: boolean }
+        url: { type: string }
+        data:
+          description: The extracted records, in the shape of `schema` when one was given.
+        usage:
+          type: object
+          properties:
+            total_tokens: { type: integer }
+        ms: { type: integer }
+
+    Usage:
+      type: object
+      description: What the call used.
+      properties:
+        units:
+          type: integer
+          description: Units this call was billed.
+
+    Link:
+      type: object
+      properties:
+        title: { type: string }
+        url: { type: string }
