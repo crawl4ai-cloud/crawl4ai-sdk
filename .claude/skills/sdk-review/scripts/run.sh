@@ -6,8 +6,11 @@
 # Needs: codex CLI on PATH, OPENAI_API_KEY in the environment. Codex gets its own config directory
 # so the user's own Codex login is never read or changed.
 set -u
+# Stop at the start, before anything is created, when a tool or the key is missing.
+command -v codex >/dev/null || { echo "the codex CLI is not installed (npm install -g @openai/codex)" >&2; exit 2; }
+[ -n "${OPENAI_API_KEY:-}" ] || { echo "OPENAI_API_KEY is not set" >&2; exit 2; }
 PARTS=${1:?parts.tsv}; OUT=${2:-${XDG_CACHE_HOME:-$HOME/.cache}/sdk-review/$(date +%Y-%m-%d-%H%M)}
-MODEL=${SDK_REVIEW_MODEL:-gpt-5.6-sol}; EFFORT=${SDK_REVIEW_EFFORT:-high}
+MODEL=${SDK_REVIEW_MODEL:-gpt-6-astra}; EFFORT=${SDK_REVIEW_EFFORT:-high}
 SKILL=$(cd "$(dirname "$0")/.." && pwd); REPO=$(git rev-parse --show-toplevel)
 CODEX_HOME=${XDG_CACHE_HOME:-$HOME/.cache}/sdk-review/codex-home
 # The transcripts, the parts file and Codex's config (it holds the key) must stay out of this public repo.
@@ -19,7 +22,6 @@ for p in paths:
         sys.exit(f"{p} must be outside the repo ({repo})")
 PY
 mkdir -p "$OUT/tasks" "$CODEX_HOME"; chmod 700 "$CODEX_HOME"
-[ -n "${OPENAI_API_KEY:-}" ] || { echo "OPENAI_API_KEY is not set" >&2; exit 2; }
 python3 - "$CODEX_HOME/auth.json" <<'PY'
 import json, os, sys; json.dump({"auth_mode": "apikey", "OPENAI_API_KEY": os.environ["OPENAI_API_KEY"]}, open(sys.argv[1], "w"))
 PY

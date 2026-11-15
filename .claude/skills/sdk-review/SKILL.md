@@ -5,10 +5,11 @@ description: Review an SDK change before its pull request. Several OpenAI review
 
 # /sdk-review: outside reviewers, one honest triage
 
-Use it before opening a pull request that adds or changes an SDK, the spec or the examples. Two
+Run it before EVERY pull request that adds or changes an SDK, the spec or the examples, fix what is
+real, and put the short result (what it found, what you fixed) in the pull request. Two
 stages, two models:
 
-1. **Find** (OpenAI `gpt-5.6-sol` through the Codex CLI, one reviewer per part, read-only, in the
+1. **Find** (OpenAI `gpt-6-astra` through the Codex CLI, one reviewer per part, read-only, in the
    background). Each reviewer owns one PART of the change and returns a ranked list of findings.
    One extra reviewer owns SECURITY across all parts.
 2. **Triage** (Claude, this session). Every finding is checked against the real code, one at a time,
@@ -39,9 +40,10 @@ streaming, paging, which fields go on the wire). Do not restate the general dire
 ```bash
 bash .claude/skills/sdk-review/scripts/run.sh <parts.tsv>     # out dir: ~/.cache/sdk-review/<date>
 ```
-It runs every part through `codex exec -m gpt-5.6-sol -c model_reasoning_effort=high -s read-only` in
+It runs every part through `codex exec -m gpt-6-astra -c model_reasoning_effort=high -s read-only` in
 parallel and writes `<out dir>/<part>.md` per reviewer plus `_done.txt`. Run it in the background
-(10 to 30 minutes). It needs `OPENAI_API_KEY`; Codex gets its own config directory under `~/.cache`,
+(10 to 30 minutes). It needs the codex CLI on `PATH` and your own `OPENAI_API_KEY`, or it stops at
+the start; Codex gets its own config directory under `~/.cache`,
 so the user's own Codex login is never touched. Cost: about $1 to $2 per part. Ask the user before
 running it, since it spends money.
 

@@ -11,6 +11,9 @@ Thank you for helping. A few rules keep this repository safe and easy to review.
 3. **The spec first.** A new endpoint or field goes into `spec/openapi.yaml` first, then into each SDK.
 4. **Small pull requests.** One purpose per pull request, with tests. The maintainer reviews and merges.
 5. **Plain English.** Short sentences, common words, in code comments and docs.
+6. **Review before the pull request.** Run `/sdk-review` (`.claude/skills/sdk-review/`) on your change,
+   fix what is real, and put the short result (what it found, what you fixed) in the pull request. It
+   needs the codex CLI and your own `OPENAI_API_KEY`.
 
 ## How
 
