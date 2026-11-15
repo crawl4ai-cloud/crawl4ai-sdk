@@ -22,4 +22,6 @@ python examples/scrape/python.py
 
 npm install crawl4ai-cloud
 node examples/scrape/node.mjs
+
+cd examples && go run ./scrape   # uses the Go SDK in this repository
 ```
