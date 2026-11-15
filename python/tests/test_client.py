@@ -62,6 +62,17 @@ def test_key_from_env_and_missing(monkeypatch):
     assert Crawl4AI()._headers["Authorization"] == "Bearer sk_new_name"
 
 
+@pytest.mark.parametrize("key", ["sk_live_SEC\nRET", "sk_live_SECRÉT", "sk live"])
+def test_key_with_a_bad_character_raises_without_the_key(key):
+    with pytest.raises(AuthenticationError) as caught:
+        Crawl4AI(key)
+    assert "SEC" not in str(caught.value)
+
+
+def test_spaces_around_the_key_are_dropped():
+    assert Crawl4AI("sk_test\n")._headers["Authorization"] == "Bearer sk_test"
+
+
 def test_scrape_sends_only_set_fields_and_reads_result():
     client, requests = fake(httpx.Response(200, json=PAGE, headers={"x-c4-cost": "0.500", "x-c4-balance": "99.5"}))
     page = client.scrape("https://example.com", format="md", parse={"links": True})
