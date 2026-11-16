@@ -1,0 +1,3 @@
+# name	doc(s) to read first	files	focus
+python	python/README.md spec/openapi.yaml	python/src/crawl4ai_cloud/*.py python/tests/*.py examples/*/python.py	retries (which calls may run twice), streaming NDJSON, paging job results, error mapping, the sync and async clients doing the same thing
+security	SECURITY.md CLAUDE.md	python/src/crawl4ai_cloud/*.py spec/openapi.yaml examples/*/python.py	SECURITY ONLY, as an attacker: the user's key leaking (logs, repr, errors, URLs), input that changes the path or host, any secret or private detail in this public repository

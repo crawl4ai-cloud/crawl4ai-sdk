@@ -52,6 +52,10 @@ paths:
                       type: string
                       format: uri
                       description: The page to scrape. A public http or https URL.
+                    bypass_cache:
+                      type: boolean
+                      default: false
+                      description: Always fetch the page fresh, never from a cached copy.
                 - $ref: "#/components/schemas/ScrapeOptions"
       responses:
         "200":
@@ -215,7 +219,7 @@ paths:
           description: Up to 500 lines.
           content:
             application/x-ndjson:
-              schema: { $ref: "#/components/schemas/ScrapeBatchLine" }
+              schema: { $ref: "#/components/schemas/ScrapeJobLine" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "429": { $ref: "#/components/responses/RateLimited" }
@@ -234,7 +238,14 @@ paths:
           description: The failed URLs are queued again.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/ScrapeJob" }
+              schema:
+                type: object
+                properties:
+                  job_id: { type: string }
+                  retrying:
+                    type: integer
+                    description: The number of failed URLs queued again.
+                  usage: { $ref: "#/components/schemas/Usage" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "402": { $ref: "#/components/responses/PaymentRequired" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -285,7 +296,7 @@ paths:
         - name: country
           in: query
           description: Two letters. The country Google serves the page for.
-          schema: { type: string, default: us }
+          schema: { type: string, minLength: 2, maxLength: 2, default: us }
         - name: language
           in: query
           description: The language of Google's page.
@@ -301,7 +312,7 @@ paths:
         - name: page
           in: query
           description: Counts in steps of `num`. `num=20&page=2` is Google pages 3 and 4. Never past Google page 30.
-          schema: { type: integer, minimum: 1, default: 1 }
+          schema: { type: integer, minimum: 1, maximum: 30, default: 1 }
         - name: device
           in: query
           schema: { type: string, default: desktop, description: "`desktop` is the only value today." }
@@ -567,8 +578,9 @@ components:
                 tables: { type: boolean }
         engine:
           description: |
-            `browser-light` or `browser` starts at that engine. Always a fresh fetch, slower, and
-            priced at the engine that serves it. Use it only when `auto` misses content.
+            `browser-light` or `browser` starts at that engine. A cached copy made by that kind of
+            browser answers at once; else it is a fresh fetch, slower, and priced at the engine that
+            serves it. Use it only when `auto` misses content.
           allOf: [{ $ref: "#/components/schemas/OpenString" }]
           default: auto
           examples: [auto, browser-light, browser]
@@ -670,10 +682,30 @@ components:
               type: integer
               description: URLs in the batch.
 
+    ScrapeJobLine:
+      type: object
+      required: [url, ok]
+      description: One URL's line in a job's results.
+      properties:
+        url: { type: string }
+        ok: { type: boolean }
+        markdown: { type: string }
+        html: { type: string }
+        content_hash: { type: [string, "null"] }
+        error:
+          type: [object, "null"]
+          description: Why the URL failed, when `ok` is `false`.
+          properties:
+            class: { type: string }
+            detail: { type: string }
+        seq:
+          type: integer
+          description: The line's position in the results, from 0.
+
     ScrapeJobStatus:
-      description: The job's state. `done` when every URL has finished.
+      description: The job's state. `done` when every URL has finished; `paused` when it waits for you.
       allOf: [{ $ref: "#/components/schemas/OpenString" }]
-      examples: [pending, done]
+      examples: [pending, running, done, paused]
 
     ScrapeJob:
       type: object
@@ -681,6 +713,13 @@ components:
       properties:
         job_id: { type: string }
         status: { $ref: "#/components/schemas/ScrapeJobStatus" }
+        counts:
+          type: object
+          description: The number of URLs in each state.
+          properties:
+            pending: { type: integer }
+            done: { type: integer }
+            error: { type: integer }
         usage:
           type: object
           properties:
@@ -699,7 +738,6 @@ components:
             cost:
               type: string
               description: What the job cost, in credits.
-      description: Also carries the counts of pending, done and failed URLs.
 
     SearchResult:
       type: object
@@ -732,9 +770,11 @@ components:
               properties:
                 title: { type: string }
                 subtitle: { type: string }
+                description: { type: string }
+                facts: { type: array, items: {} }
             videos: { type: array, items: { $ref: "#/components/schemas/Link" } }
             news: { type: array, items: { $ref: "#/components/schemas/Link" } }
-            discussions: { type: array, items: {} }
+            discussions: { type: array, items: { $ref: "#/components/schemas/Link" } }
             did_you_mean: { type: string }
 
     SerpResult:
