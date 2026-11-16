@@ -76,12 +76,25 @@ func WithMaxRetries(n int) Option { return func(c *Client) { c.maxRetries = n } 
 // WithHTTPClient sends the calls through your own *http.Client (for a proxy, say).
 func WithHTTPClient(h *http.Client) Option { return func(c *Client) { c.http = h } }
 
+// defaultHTTP is http.DefaultClient, except that it does not follow a redirect to another origin:
+// Go keeps the Authorization header when https turns into http on the same host. The 3xx comes back
+// as the error. A client passed to WithHTTPClient keeps its own redirect rules.
+var defaultHTTP = &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
+	if req.URL.Scheme != via[0].URL.Scheme || req.URL.Host != via[0].URL.Host {
+		return http.ErrUseLastResponse
+	}
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	return nil
+}}
+
 // NewClient returns a client. With no key, and a key with a character a header cannot carry, it
 // returns an ErrAuthentication error (without the key).
 //
 //	client, err := crawl4ai.NewClient(crawl4ai.WithTimeout(60 * time.Second))
 func NewClient(opts ...Option) (*Client, error) {
-	c := &Client{baseURL: BaseURL, timeout: DefaultTimeout, maxRetries: DefaultMaxRetries, http: http.DefaultClient}
+	c := &Client{baseURL: BaseURL, timeout: DefaultTimeout, maxRetries: DefaultMaxRetries, http: defaultHTTP}
 	for _, opt := range opts {
 		opt(c)
 	}

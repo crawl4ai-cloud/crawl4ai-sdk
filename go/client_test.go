@@ -567,3 +567,18 @@ func TestRetryDelay(t *testing.T) {
 		}
 	}
 }
+
+func TestARedirectToAnotherOriginIsNotFollowed(t *testing.T) {
+	other := fake(t, answerJSON(200, map[string]any{"results": []any{}}))
+	s := fake(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, other.url+"/search", http.StatusFound)
+	})
+	_, err := s.client.Search(ctx, "x", nil)
+	var e *Error
+	if !errors.As(err, &e) || e.Status != http.StatusFound {
+		t.Fatalf("err %v", err)
+	}
+	if len(other.got()) != 0 {
+		t.Fatal("the key went to another origin")
+	}
+}
