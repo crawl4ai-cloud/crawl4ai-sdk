@@ -1,0 +1,45 @@
+{
+  "name": "crawl4ai-cloud",
+  "version": "2.0.0",
+  "description": "The official Node.js and TypeScript client for the Crawl4AI Cloud API: web pages to Markdown and JSON, web search, Google results and answers.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20.19"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "tsc -p tsconfig.build.json && tsc --noEmit && node --test \"test/*.test.ts\"",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "crawl4ai",
+    "web scraping",
+    "crawler",
+    "markdown",
+    "llm",
+    "search",
+    "serp"
+  ],
+  "homepage": "https://crawl4ai.com/docs/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/crawl4ai-cloud/crawl4ai-sdk.git",
+    "directory": "node"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "typescript": "5.9.3"
+  }
+}

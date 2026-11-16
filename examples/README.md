@@ -15,7 +15,11 @@ One folder per task (scrape a page, extract JSON, search, batch), each with the 
 Run one with your key in the environment. Each run spends a few credits.
 
 ```bash
-pip install crawl4ai-cloud-sdk
 export CRAWL4AI_API_KEY=sk_live_...
+
+pip install crawl4ai-cloud-sdk
 python examples/scrape/python.py
+
+npm install crawl4ai-cloud
+node examples/scrape/node.mjs
 ```
