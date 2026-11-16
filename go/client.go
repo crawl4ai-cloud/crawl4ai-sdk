@@ -20,10 +20,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"iter"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -213,14 +215,17 @@ func errorFrom(status int, text []byte) *Error {
 	return &Error{Kind: kind, Status: status, Code: code, Message: message, Actions: actions}
 }
 
-// failed turns a failure to send or read into an *Error: no answer in time, the caller's own
-// context ending, or a lost connection.
+// failed turns a failure to send or read into an *Error: no answer in time (our timeout or the
+// caller's own http.Client's), the caller's own context ending, or a lost connection.
 func failed(ctx context.Context, it *idleTimer, path string, err error) *Error {
+	var ne net.Error
 	switch {
 	case it != nil && it.expired.Load():
 		return &Error{Kind: ErrTimeout, Message: path + ": no answer in time", Err: err}
 	case ctx.Err() != nil:
 		return stopped(ctx, path)
+	case errors.As(err, &ne) && ne.Timeout():
+		return &Error{Kind: ErrTimeout, Message: path + ": no answer in time", Err: err}
 	default:
 		return &Error{Kind: ErrConnection, Message: path + ": " + err.Error(), Err: err}
 	}
@@ -284,8 +289,8 @@ func (c *Client) open(ctx context.Context, k call) (*http.Response, *idleTimer, 
 		if err != nil {
 			it.stop()
 			cancel()
-			if it.expired.Load() || ctx.Err() != nil || last || k.once {
-				return nil, nil, nil, failed(ctx, it, k.path, err)
+			if e := failed(ctx, it, k.path, err); e.Kind != ErrConnection || last || k.once {
+				return nil, nil, nil, e
 			}
 			if err := sleep(ctx, retryDelay(attempt, "")); err != nil {
 				return nil, nil, nil, stopped(ctx, k.path)
@@ -367,6 +372,10 @@ func (c *Client) lines(ctx context.Context, k call) iter.Seq2[[]byte, error] {
 		r := bufio.NewReader(touchReader{resp.Body, it})
 		for {
 			line, err := r.ReadBytes('\n')
+			if err != nil && err != io.EOF {
+				yield(nil, failed(ctx, it, k.path, err)) // a part line is dropped: the error says why
+				return
+			}
 			if len(bytes.TrimSpace(line)) > 0 {
 				it.stop() // the caller's own time does not count against the server
 				if !yield(line, nil) {
@@ -375,10 +384,6 @@ func (c *Client) lines(ctx context.Context, k call) iter.Seq2[[]byte, error] {
 				it.touch()
 			}
 			if err == io.EOF {
-				return
-			}
-			if err != nil {
-				yield(nil, failed(ctx, it, k.path, err))
 				return
 			}
 		}
@@ -443,11 +448,16 @@ func (c *Client) ScrapeBatch(ctx context.Context, urls []string, opts *ScrapeOpt
 		for line, err := range c.lines(ctx, k) {
 			var v struct {
 				ScrapeBatchItem
+				Result  json.RawMessage `json:"result"` // decoded below, so Result.Raw keeps it
 				Cost    json.Number     `json:"cost"`
 				Summary json.RawMessage `json:"summary"`
 			}
 			if err == nil {
 				err = decode(k.path, line, &v)
+			}
+			if err == nil && v.Result != nil && string(v.Result) != "null" {
+				v.ScrapeBatchItem.Result = &ScrapeResult{Meta: Meta{Raw: v.Result}}
+				err = decode(k.path, v.Result, v.ScrapeBatchItem.Result)
 			}
 			if err != nil {
 				yield(ScrapeBatchItem{}, err)
@@ -579,6 +589,7 @@ func (c *Client) GetScrapeJobResults(ctx context.Context, jobID string) iter.Seq
 				if err == nil {
 					err = decode(path, line, &item)
 				}
+				item.Raw = bytes.TrimSpace(line)
 				if err != nil {
 					yield(ScrapeJobItem{}, err)
 					return

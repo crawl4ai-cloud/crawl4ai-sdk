@@ -77,8 +77,9 @@ type LadderStep struct {
 	Ms      int    `json:"ms,omitempty"`
 }
 
-// ScrapeBatchItem is one URL from ScrapeBatch: the page in Result when OK, else the reason in
-// Error. Cost is what this URL cost, in credits (the server sends it as text).
+// ScrapeBatchItem is one URL from ScrapeBatch: the page in Result when OK (Result.Raw is the page
+// as JSON), else the reason in Error. Cost is what this URL cost, in credits (the server sends it
+// as text).
 type ScrapeBatchItem struct {
 	URL    string        `json:"url"`
 	OK     bool          `json:"ok"`
@@ -104,15 +105,17 @@ type JobCounts struct {
 	Error   int `json:"error"`
 }
 
-// ScrapeJobItem is one URL from a job's results. On failure OK is false and Error says why.
+// ScrapeJobItem is one URL from a job's results. On failure OK is false and Error says why. Raw is
+// the whole line as JSON.
 type ScrapeJobItem struct {
-	URL         string    `json:"url"`
-	OK          bool      `json:"ok"`
-	Markdown    string    `json:"markdown,omitempty"`
-	HTML        string    `json:"html,omitempty"`
-	ContentHash string    `json:"content_hash,omitempty"`
-	Error       *JobError `json:"error,omitempty"`
-	Seq         int       `json:"seq,omitempty"`
+	URL         string          `json:"url"`
+	OK          bool            `json:"ok"`
+	Markdown    string          `json:"markdown,omitempty"`
+	HTML        string          `json:"html,omitempty"`
+	ContentHash string          `json:"content_hash,omitempty"`
+	Error       *JobError       `json:"error,omitempty"`
+	Seq         int             `json:"seq,omitempty"`
+	Raw         json.RawMessage `json:"-"`
 }
 
 // JobError is why a job's URL failed.

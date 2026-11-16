@@ -303,6 +303,16 @@ func TestNoAnswerInTimeIsATimeoutAndIsNotRetried(t *testing.T) {
 	}
 }
 
+func TestYourOwnHTTPClientsTimeoutIsATimeoutAndIsNotRetried(t *testing.T) {
+	s := fake(t, func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
+	c := s.newClient(t, WithHTTPClient(&http.Client{Timeout: 20 * time.Millisecond}), WithMaxRetries(1))
+	_, err := c.Search(ctx, "x", nil)
+	isKind(t, err, ErrTimeout)
+	if len(s.got()) != 1 {
+		t.Fatalf("sent %d", len(s.got()))
+	}
+}
+
 func TestTheCallersCancelStopsTheCall(t *testing.T) {
 	s := fake(t, answerJSON(503, map[string]any{"error": "busy"}))
 	done, cancel := context.WithCancel(ctx)
@@ -343,6 +353,21 @@ func TestScrapeBatchYieldsItemsAndSkipsTheSummary(t *testing.T) {
 	}
 }
 
+func TestBatchAndJobItemsKeepTheRawAnswer(t *testing.T) {
+	s := fake(t, answerLines(map[string]any{"url": "https://a.com", "ok": true, "result": page}))
+	for item, err := range s.client.ScrapeBatch(ctx, []string{"https://a.com"}, nil) {
+		if err != nil || !strings.Contains(string(item.Result.Raw), `"new_field":1`) {
+			t.Fatalf("%s %v", item.Result.Raw, err)
+		}
+	}
+	s = fake(t, answerLines(map[string]any{"url": "https://a.com", "ok": true, "new_field": 1}), answerText(200, ""))
+	for item, err := range s.client.GetScrapeJobResults(ctx, "j") {
+		if err != nil || !strings.Contains(string(item.Raw), `"new_field":1`) {
+			t.Fatalf("%s %v", item.Raw, err)
+		}
+	}
+}
+
 func TestALineSplitAcrossTwoChunksIsReadWhole(t *testing.T) {
 	s := fake(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `{"url": "https://a.c`)
@@ -375,6 +400,17 @@ func TestAStreamThatStopsSendingIsATimeout(t *testing.T) {
 	isKind(t, last, ErrTimeout)
 	if fmt.Sprint(urls) != "[https://a.com]" {
 		t.Fatalf("urls %v", urls)
+	}
+}
+
+func TestAStreamThatStopsMidLineIsATimeout(t *testing.T) {
+	s := fake(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"url":"https://exa`)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	})
+	for _, err := range s.newClient(t, WithTimeout(50*time.Millisecond)).ScrapeBatch(ctx, []string{"https://a.com"}, nil) {
+		isKind(t, err, ErrTimeout)
 	}
 }
 
