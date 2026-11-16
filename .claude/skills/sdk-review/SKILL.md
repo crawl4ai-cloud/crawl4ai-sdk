@@ -44,7 +44,8 @@ It runs every part through `codex exec -m gpt-6-astra -c model_reasoning_effort=
 parallel and writes `<out dir>/<part>.md` per reviewer plus `_done.txt`. Run it in the background
 (10 to 30 minutes). It needs the codex CLI on `PATH` and your own `OPENAI_API_KEY`, or it stops at
 the start; Codex gets its own config directory under `~/.cache`,
-so the user's own Codex login is never touched. Cost: about $1 to $2 per part. Ask the user before
+so the user's own Codex login is never touched. The key is never written to a file, and the commands
+a reviewer runs do not get it, so a change under review cannot make a reviewer print it. Cost: about $1 to $2 per part. Ask the user before
 running it, since it spends money.
 
 **This repository is public.** The out dir, the parts file and the reviewer transcripts stay outside
