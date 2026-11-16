@@ -254,6 +254,40 @@ def test_timeout_in_the_middle_of_a_stream_is_a_timeout():
         next(items)
 
 
+def test_line_separator_inside_a_page_does_not_split_the_stream():
+    # U+2028 is valid unescaped in JSON text, and real pages hold it; httpx's iter_lines splits there.
+    body = json.dumps({"url": "https://a.com", "ok": True, "result": {"markdown": "a\u2028b"}}, ensure_ascii=False) + "\n"
+    client, _ = fake(httpx.Response(200, content=body.encode()))
+    assert [i.result.markdown for i in client.scrape_batch(["https://a.com"])] == ["a\u2028b"]
+
+    async def run():
+        transport = httpx.MockTransport(lambda request: httpx.Response(200, content=body.encode()))
+        async with AsyncCrawl4AI("sk_test", http_client=httpx.AsyncClient(transport=transport)) as client:
+            return [i.result.markdown async for i in client.scrape_batch(["https://a.com"])]
+
+    assert asyncio.run(run()) == ["a\u2028b"]
+
+
+def test_200_cut_off_midway_is_not_sent_again():
+    class CutOff(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b'{"ok": true, "mark'
+            raise httpx.ReadError("connection reset")
+
+    client, requests = fake(httpx.Response(200, stream=CutOff()), httpx.Response(200, json=PAGE))
+    with pytest.raises(client_module.APIConnectionError):
+        client.scrape("https://example.com")
+    assert len(requests) == 1  # the 200 shows the page already ran and was paid for
+
+
+def test_answer_that_is_not_json_is_a_connection_error():
+    client, _ = fake(httpx.Response(200, text="<html>proxy login</html>"), httpx.Response(200, text="<html>\n"))
+    with pytest.raises(client_module.APIConnectionError, match="not JSON: <html>proxy login"):
+        client.search("x")
+    with pytest.raises(client_module.APIConnectionError, match="not JSON"):
+        list(client.scrape_batch(["https://a.com"]))
+
+
 def test_async_client_retries_and_streams(monkeypatch):
     waits = []
 

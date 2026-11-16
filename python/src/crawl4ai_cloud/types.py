@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 import httpx
 
+from . import _http
+
 if TYPE_CHECKING:
     from typing_extensions import Self  # only for the type checker; typing.Self needs Python 3.11
 
@@ -58,7 +60,7 @@ class Response(Model):
     @classmethod
     def from_response(cls, response: httpx.Response) -> Self:
         """Reads the JSON body and the `x-c4-cost`, `x-c4-balance`, `x-c4-allowance-left` headers."""
-        result = cls.from_dict(response.json())
+        result = cls.from_dict(_http.parse(response.content, response.request.url.path))
         result.cost = _credits(response.headers.get("x-c4-cost"))
         result.balance = _credits(response.headers.get("x-c4-balance"))
         result.allowance_left = _credits(response.headers.get("x-c4-allowance-left"))

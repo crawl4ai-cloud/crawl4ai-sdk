@@ -7,7 +7,6 @@ turns an error answer into an exception (the shared rules are in `_http`).
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from collections.abc import AsyncIterator, Iterator
 from typing import TYPE_CHECKING, Any, Literal
@@ -102,7 +101,8 @@ class Crawl4AI:
         2. On 429 / 503 (and 500 / 504 when `safe`) wait `retry_delay` and send again,
            up to `max_retries` times.
         3. Any other error answer raises the exception `error_from` picks.
-        With `stream`, the caller reads the body and must close the answer.
+        The body is read after the loop, so a 200 cut off midway is never sent again (it may
+        already have run). With `stream`, the caller reads the body and must close the answer.
         """
         request = self._http.build_request(
             method, self._base_url + path, params=params, json=json, headers=self._headers, timeout=self._timeout
@@ -111,7 +111,7 @@ class Crawl4AI:
             last = attempt == self._max_retries
             # ---- 1. Send ----
             try:
-                response = self._http.send(request, stream=stream)
+                response = self._http.send(request, stream=True)
             except httpx.TimeoutException as e:
                 raise APITimeoutError(f"No answer from {path} in time: {e}") from e
             except httpx.TransportError as e:
@@ -119,10 +119,13 @@ class Crawl4AI:
                     raise APIConnectionError(f"{path}: {e}") from e
                 time.sleep(_http.retry_delay(attempt))
                 continue
+            if response.is_success and stream:
+                return response
+            with _http.reading(path):
+                response.read()  # the answer's JSON, or the error's body for error_from
             if response.is_success:
                 return response
             # ---- 2. Retry ----
-            response.read()  # a streamed error answer: load its body for error_from
             if last or not _http.should_retry(response.status_code, safe):
                 # ---- 3. Raise ----
                 raise _http.error_from(response)
@@ -131,16 +134,19 @@ class Crawl4AI:
         raise AssertionError("unreachable: the last attempt returns or raises")
 
     def _lines(self, method: str, path: str, **kwargs: Any) -> Iterator[dict[str, Any]]:
-        """Sends one request and yields each line of its NDJSON answer as a dict, as it arrives."""
+        """Sends one request and yields each line of its NDJSON answer as a dict, as it arrives.
+        Lines end at `\n` only: httpx's `iter_lines` also splits at U+2028, which JSON text may hold."""
         response = self._open(method, path, stream=True, **kwargs)
         try:
-            for line in response.iter_lines():
-                if line.strip():
-                    yield json.loads(line)
-        except httpx.TimeoutException as e:
-            raise APITimeoutError(f"{path}: the answer stopped coming in time: {e}") from e
-        except httpx.TransportError as e:
-            raise APIConnectionError(f"{path}: the answer stopped: {e}") from e
+            buffer = b""
+            with _http.reading(path):
+                for chunk in response.iter_bytes():
+                    *lines, buffer = (buffer + chunk).split(b"\n")
+                    for line in lines:
+                        if line.strip():
+                            yield _http.parse(line, path)
+            if buffer.strip():
+                yield _http.parse(buffer, path)
         finally:
             response.close()
 
@@ -470,7 +476,7 @@ class AsyncCrawl4AI:
         for attempt in range(self._max_retries + 1):
             last = attempt == self._max_retries
             try:
-                response = await self._http.send(request, stream=stream)
+                response = await self._http.send(request, stream=True)
             except httpx.TimeoutException as e:
                 raise APITimeoutError(f"No answer from {path} in time: {e}") from e
             except httpx.TransportError as e:
@@ -478,9 +484,12 @@ class AsyncCrawl4AI:
                     raise APIConnectionError(f"{path}: {e}") from e
                 await asyncio.sleep(_http.retry_delay(attempt))
                 continue
+            if response.is_success and stream:
+                return response
+            with _http.reading(path):
+                await response.aread()
             if response.is_success:
                 return response
-            await response.aread()
             if last or not _http.should_retry(response.status_code, safe):
                 raise _http.error_from(response)
             await response.aclose()
@@ -488,16 +497,19 @@ class AsyncCrawl4AI:
         raise AssertionError("unreachable: the last attempt returns or raises")
 
     async def _lines(self, method: str, path: str, **kwargs: Any) -> AsyncIterator[dict[str, Any]]:
-        """Sends one request and yields each line of its NDJSON answer as a dict, as it arrives."""
+        """Sends one request and yields each line of its NDJSON answer as a dict, as it arrives.
+        Lines end at `\n` only, as in `Crawl4AI._lines`."""
         response = await self._open(method, path, stream=True, **kwargs)
         try:
-            async for line in response.aiter_lines():
-                if line.strip():
-                    yield json.loads(line)
-        except httpx.TimeoutException as e:
-            raise APITimeoutError(f"{path}: the answer stopped coming in time: {e}") from e
-        except httpx.TransportError as e:
-            raise APIConnectionError(f"{path}: the answer stopped: {e}") from e
+            buffer = b""
+            with _http.reading(path):
+                async for chunk in response.aiter_bytes():
+                    *lines, buffer = (buffer + chunk).split(b"\n")
+                    for line in lines:
+                        if line.strip():
+                            yield _http.parse(line, path)
+            if buffer.strip():
+                yield _http.parse(buffer, path)
         finally:
             await response.aclose()
 
