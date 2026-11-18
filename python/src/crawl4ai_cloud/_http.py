@@ -7,6 +7,8 @@ import json
 import os
 import random
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 from urllib.parse import quote
 
@@ -14,6 +16,8 @@ import httpx
 
 from ._version import __version__
 from .errors import (
+    APIConnectionError,
+    APITimeoutError,
     AuthenticationError,
     BadRequestError,
     BlockedError,
@@ -91,6 +95,26 @@ def error_from(response: httpx.Response) -> Crawl4AIError:
     message = body.get("message") or code or response.text.strip()[:500] or f"HTTP {status}"
     error_class = _ERROR_BY_STATUS.get(status) or (ServerError if status >= 500 else Crawl4AIError)
     return error_class(message, status=status, code=code, actions=body.get("actions"))
+
+
+@contextmanager
+def reading(path: str) -> Iterator[None]:
+    """Turns a failure while an answer's body comes in into APITimeoutError or APIConnectionError.
+    It is never retried: the server answered, so it may already have done the work."""
+    try:
+        yield
+    except httpx.TimeoutException as e:
+        raise APITimeoutError(f"{path}: the answer stopped coming in time: {e}") from e
+    except httpx.TransportError as e:
+        raise APIConnectionError(f"{path}: the answer stopped: {e}") from e
+
+
+def parse(text: bytes, path: str) -> Any:
+    """Reads JSON. A body that is not JSON (a proxy's HTML page, say) raises APIConnectionError."""
+    try:
+        return json.loads(text)
+    except ValueError as e:
+        raise APIConnectionError(f"{path}: the answer is not JSON: {text[:100].decode(errors='replace')}") from e
 
 
 def body(**fields: Any) -> dict[str, Any]:
