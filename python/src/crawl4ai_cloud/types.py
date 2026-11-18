@@ -155,21 +155,26 @@ class ScrapeJobRetry(Response):
 
 @dataclass(kw_only=True, slots=True)
 class SearchItem(Model):
-    """One web result. `source` is `gg` or `gs` for a live result, `index` for the Crawl4AI index."""
+    """One web result. `source` is `gg` or `gs` for a live result, `index` for the Crawl4AI index.
+    `markdown` (only with `deep=True`) is the page's text, absent when the page gave none in time."""
 
     title: str | None = None
     url: str | None = None
     snippet: str | None = None
     source: str | None = None
+    markdown: str | None = None
 
 
 @dataclass(kw_only=True, slots=True)
 class SearchResult(Response):
     """The answer to `search`. `rich` (only with `rich=True`) holds follow-up questions, related
-    queries, an entity card and more, each key only when it was on the page."""
+    queries, an entity card and more, each key only when it was on the page. `deep` and
+    `usage["deep_pages"]` (only with `deep=True`) count the pages read and the pages charged."""
 
     results: list[SearchItem] | None = None
     rich: dict[str, Any] | None = None
+    deep: dict[str, Any] | None = None
+    usage: dict[str, Any] | None = None
 
     _nested: ClassVar[dict[str, type[Model]]] = {"results": SearchItem}
 

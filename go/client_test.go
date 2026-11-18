@@ -486,6 +486,21 @@ func TestRetryReadsUsage(t *testing.T) {
 	}
 }
 
+func TestSearchSendsDeepAs1AndReadsMarkdownAndDeepPages(t *testing.T) {
+	s := fake(t, answerJSON(200, map[string]any{
+		"results": []any{map[string]any{"url": "https://a.com", "markdown": "# A"}, map[string]any{"url": "https://b.com"}},
+		"deep":    map[string]any{"launched": 2, "got": 1, "from_archive": 0, "late": 1, "ms": 900},
+		"usage":   map[string]any{"deep_pages": 1},
+	}))
+	r, err := s.client.Search(ctx, "x", &SearchOptions{Deep: true})
+	if err != nil || r.Results[0].Markdown != "# A" || r.Results[1].Markdown != "" || r.Deep.Got != 1 || r.Usage.DeepPages != 1 {
+		t.Fatalf("%+v %v", r, err)
+	}
+	if want := "deep=1&q=x"; s.got()[0].query != want {
+		t.Fatalf("query %s", s.got()[0].query)
+	}
+}
+
 func TestAnswerSendsTheSchemaAsJSONTextAndDeepAs0(t *testing.T) {
 	s := fake(t, answerJSON(200, map[string]any{"answered": true, "answer": map[string]any{"text": `{"name":"Guido"}`}}))
 	schema := map[string]any{"type": "object"}

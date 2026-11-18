@@ -265,6 +265,14 @@ paths:
           in: query
           description: "`1` adds the `rich` block: follow-up questions, related queries, an entity card, videos, news and more. Slightly slower."
           schema: { type: integer, enum: [0, 1], default: 0 }
+        - name: deep
+          in: query
+          description: |
+            `1` also reads the top 10 result pages and puts each page's clean text in its result's
+            `markdown`: at most 15,000 characters a page, 100,000 in all, up to 5 s slower.
+            Each page with text costs one plain `/scrape` page (0.1 credit); a page without costs
+            nothing. To start, the balance must cover the search plus 10 pages.
+          schema: { type: integer, enum: [0, 1], default: 0 }
       responses:
         "200":
           description: The results.
@@ -759,6 +767,24 @@ components:
                 description: "`gg` and `gs`: a live web result. `index`: from the Crawl4AI index."
                 allOf: [{ $ref: "#/components/schemas/OpenString" }]
                 examples: [gg, gs, index]
+              markdown:
+                type: string
+                description: Only with `deep=1`. The page's clean text. Absent when the page was blocked, gave no text or was not back in time.
+        deep:
+          type: object
+          description: Only with `deep=1`.
+          properties:
+            launched: { type: integer, description: Pages asked for. }
+            got: { type: integer, description: Pages whose text is in a result's `markdown`. }
+            from_archive: { type: integer }
+            late: { type: integer, description: Pages not back in time. }
+            ms: { type: integer }
+        usage:
+          type: object
+          properties:
+            deep_pages:
+              type: integer
+              description: Only with `deep=1`. Pages charged, equal to `deep.got`.
         rich:
           type: object
           description: Only with `rich=1`. Each key appears only when that block was on the page.

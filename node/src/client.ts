@@ -338,7 +338,9 @@ export class Crawl4AI {
    * Searches the web and returns ranked, cleaned results (`GET /search`).
    *
    * `q` is the query, at most 512 characters. `rich: true` adds follow-up questions, related
-   * queries, an entity card, videos and news.
+   * queries, an entity card, videos and news. `deep: true` also reads the top 10 pages and puts
+   * each page's text in its result's `markdown`: up to 5 s slower, and each page with text costs
+   * one plain scrape page.
    *
    * Example:
    *   import { Crawl4AI } from "crawl4ai-cloud";
@@ -346,7 +348,7 @@ export class Crawl4AI {
    *   const { results } = await new Crawl4AI().search("rust web crawler");
    *   for (const result of results) console.log(result.title, result.url);
    */
-  search(q: string, options: { rich?: boolean } = {}): Promise<SearchResult> {
+  search(q: string, options: { rich?: boolean; deep?: boolean } = {}): Promise<SearchResult> {
     return this.#json("GET", "/search", { query: { q, ...options } });
   }
 

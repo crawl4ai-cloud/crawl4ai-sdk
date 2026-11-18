@@ -188,6 +188,18 @@ def test_wait_never_sleeps_past_its_timeout(monkeypatch, no_sleep):
     assert no_sleep == [1.0]  # 1 s left, not the full 5 s
 
 
+def test_search_sends_deep_as_1_and_reads_markdown_and_deep_pages():
+    client, requests = fake(httpx.Response(200, json={
+        "results": [{"url": "https://a.com", "markdown": "# A"}, {"url": "https://b.com"}],
+        "deep": {"launched": 2, "got": 1, "from_archive": 0, "late": 1, "ms": 900},
+        "usage": {"deep_pages": 1},
+    }))
+    result = client.search("x", deep=True)
+    assert requests[0].url.params["deep"] == "1" and "rich" not in requests[0].url.params
+    assert [r.markdown for r in result.results] == ["# A", None]
+    assert result.deep["got"] == 1 and result.usage == {"deep_pages": 1}
+
+
 def test_answer_sends_schema_as_json_text_and_deep_as_0():
     client, requests = fake(httpx.Response(200, json={
         "answered": True, "answer": {"text": '{"city":"Paris"}', "source": "crawl4ai", "sources": [{"title": "T", "url": "u"}]},

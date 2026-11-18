@@ -93,20 +93,27 @@ export interface ScrapeJobRetry extends Costs {
   usage?: Record<string, unknown>;
 }
 
-/** One web result. `source` is `gg` or `gs` for a live result, `index` for the Crawl4AI index. */
+/**
+ * One web result. `source` is `gg` or `gs` for a live result, `index` for the Crawl4AI index.
+ * `markdown` (only with `deep: true`) is the page's text, absent when the page gave none in time.
+ */
 export interface SearchItem {
   title?: string;
   url: string;
   snippet?: string;
   source?: string;
+  markdown?: string;
 }
 
 /**
  * The answer to `search`. `rich` (only with `rich: true`) holds follow-up questions, related
- * queries, an entity card and more, each key only when it was on the page.
+ * queries, an entity card and more, each key only when it was on the page. `deep` and
+ * `usage.deep_pages` (only with `deep: true`) count the pages read and the pages charged.
  */
 export interface SearchResult extends Costs {
   results: SearchItem[];
+  deep?: { launched?: number; got?: number; from_archive?: number; late?: number; ms?: number };
+  usage?: { deep_pages?: number };
   rich?: {
     follow_up_questions?: string[];
     related_queries?: string[];

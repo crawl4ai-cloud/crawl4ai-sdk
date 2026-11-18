@@ -313,12 +313,14 @@ class Crawl4AI:
         """
         return ScrapeJobRetry.from_response(self._open("POST", _http.job_path(job_id, "/retry"), safe=False))
 
-    def search(self, q: str, *, rich: bool | None = None) -> SearchResult:
+    def search(self, q: str, *, rich: bool | None = None, deep: bool | None = None) -> SearchResult:
         """Searches the web and returns ranked, cleaned results (`GET /search`).
 
         Params:
             `q`: the query, at most 512 characters.
             `rich`: True adds follow-up questions, related queries, an entity card, videos and news.
+            `deep`: True also reads the top 10 pages and puts each page's text in its result's
+                `markdown`. Up to 5 s slower; each page with text costs one plain scrape page.
 
         Example:
             from crawl4ai_cloud import Crawl4AI
@@ -326,7 +328,7 @@ class Crawl4AI:
             for result in Crawl4AI().search("rust web crawler").results:
                 print(result.title, result.url)
         """
-        params = _http.body(q=q, rich=_http.flag(rich))
+        params = _http.body(q=q, rich=_http.flag(rich), deep=_http.flag(deep))
         return SearchResult.from_response(self._open("GET", "/search", params=params))
 
     def serp(
@@ -625,13 +627,13 @@ class AsyncCrawl4AI:
         """
         return ScrapeJobRetry.from_response(await self._open("POST", _http.job_path(job_id, "/retry"), safe=False))
 
-    async def search(self, q: str, *, rich: bool | None = None) -> SearchResult:
+    async def search(self, q: str, *, rich: bool | None = None, deep: bool | None = None) -> SearchResult:
         """Web search. See `Crawl4AI.search`.
 
         Example:
             results = (await AsyncCrawl4AI().search("rust web crawler")).results
         """
-        params = _http.body(q=q, rich=_http.flag(rich))
+        params = _http.body(q=q, rich=_http.flag(rich), deep=_http.flag(deep))
         return SearchResult.from_response(await self._open("GET", "/search", params=params))
 
     async def serp(

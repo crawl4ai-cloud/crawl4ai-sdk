@@ -260,6 +260,22 @@ test("retryScrapeJob reads usage", async () => {
   assert.deepEqual(result.usage, { units: 2 });
 });
 
+test("search sends deep as 1 and reads markdown and deep_pages", async () => {
+  const { client, sent } = fake(
+    json({
+      results: [{ url: "https://a.com", markdown: "# A" }, { url: "https://b.com" }],
+      deep: { launched: 2, got: 1, from_archive: 0, late: 1, ms: 900 },
+      usage: { deep_pages: 1 },
+    }),
+  );
+  const result = await client.search("x", { deep: true });
+  assert.equal(sent[0]!.url.searchParams.get("deep"), "1");
+  assert.equal(sent[0]!.url.searchParams.has("rich"), false);
+  assert.deepEqual(result.results.map((r) => r.markdown), ["# A", undefined]);
+  assert.equal(result.deep?.got, 1);
+  assert.equal(result.usage?.deep_pages, 1);
+});
+
 test("answer sends the schema as JSON text and deep as 0", async () => {
   const { client, sent } = fake(
     json({ answered: true, answer: { text: '{"city":"Paris"}', source: "crawl4ai", sources: [{ title: "T", url: "u" }] } }),
