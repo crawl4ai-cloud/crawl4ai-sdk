@@ -182,3 +182,60 @@ export interface ExtractResult extends Costs {
   usage?: Record<string, unknown>;
   ms?: number;
 }
+
+/**
+ * One tool of the Toolkit. `find` fills the summary fields: `id`, `name` (`[lead word, rest]`),
+ * `source` (the site), `kind`, `summary`, `cost` (text like `1 cr`), `typical` (a typical run time),
+ * `status`, `essential` and `beta`. `get` adds `description`, `inputs`, `output` (`output.fields`),
+ * `examples` and `input_schema` (a JSON Schema of the inputs), and gives `cost` as an object.
+ */
+export interface Tool {
+  id: string;
+  name?: string[];
+  source?: string;
+  kind?: string;
+  summary?: string;
+  cost?: unknown;
+  typical?: string;
+  status?: "verified" | "beta" | "failing" | (string & {});
+  essential?: boolean;
+  beta?: boolean;
+  description?: string;
+  inputs?: Array<{ name: string; type?: string; required?: boolean; help?: string; example?: unknown } & Record<string, unknown>>;
+  output?: { fields?: Array<Record<string, unknown>> } & Record<string, unknown>;
+  examples?: Array<{ label?: string; input?: Record<string, unknown> }>;
+  input_schema?: Record<string, unknown>;
+}
+
+/** The answer to `tools.find`: the `tools` on this page, the `total` that match, and `next_cursor` for the next page. */
+export interface ToolList {
+  tools: Tool[];
+  total?: number;
+  next_cursor?: string | null;
+  counts?: Record<string, unknown>;
+}
+
+/**
+ * The answer to `tools.estimate`: `text` says the price in words (`1 cr`) and `rule` how it is set.
+ * Some tools give their own estimate in `data` instead (`data.text`, `data.min`, `data.max`).
+ */
+export interface ToolEstimate {
+  tool?: string;
+  text?: string;
+  rule?: string;
+  data?: Record<string, unknown>;
+}
+
+/**
+ * The answer to `tools.run`, the same shape for every tool: the `rows` it found (a tool that returns
+ * rows), the rest of its answer in `data`, `usage.credits`, `took_ms` and the `request_id` to quote
+ * when you report a problem.
+ */
+export interface ToolRun extends Costs {
+  tool: string;
+  request_id?: string;
+  took_ms?: number;
+  usage?: { credits?: number | null } & Record<string, unknown>;
+  rows?: Array<Record<string, unknown>>;
+  data?: unknown;
+}

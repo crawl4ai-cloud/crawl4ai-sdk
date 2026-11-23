@@ -450,6 +450,144 @@ paths:
         "429": { $ref: "#/components/responses/RateLimited" }
         "500": { $ref: "#/components/responses/ServerError" }
 
+  /tools:
+    get:
+      operationId: findTools
+      summary: The Toolkit catalog, best match first.
+      description: |
+        Every kind of data is a tool: `scrape`, `search` and `extract` work on any website, and a
+        ready tool exists for each supported site (`amazon-product`, `linkedin-company`, ...).
+        Free, and no key is needed.
+      security: []
+      externalDocs:
+        url: https://crawl4ai.com/docs/tools/
+      parameters:
+        - name: q
+          in: query
+          description: Words; every word must be in the tool's id, name, site, summary or search words. Ranked by exact id, name, site, summary.
+          schema: { type: string }
+        - name: kind
+          in: query
+          description: "`pages` (read pages), `search`, `people` (people and companies) or `sites` (one site each)."
+          schema: { $ref: "#/components/schemas/OpenString" }
+        - name: source
+          in: query
+          description: A site id, for example `amazon`.
+          schema: { type: string }
+        - name: status
+          in: query
+          description: "`verified`, `beta` or `failing`."
+          schema: { $ref: "#/components/schemas/OpenString" }
+        - name: essential
+          in: query
+          description: "`true`: only the tools that work on any website."
+          schema: { type: boolean }
+        - name: limit
+          in: query
+          description: Tools on a page.
+          schema: { type: integer, default: 50, maximum: 200 }
+        - name: cursor
+          in: query
+          description: "`next_cursor` from the last page."
+          schema: { type: string }
+      responses:
+        "200":
+          description: One page of tools.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ToolList" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /tools/{id}:
+    get:
+      operationId: getTool
+      summary: One tool in full.
+      description: Its inputs, examples, output fields, cost and a JSON Schema of its inputs. Free, and no key is needed.
+      security: []
+      externalDocs:
+        url: https://crawl4ai.com/docs/tools/
+      parameters:
+        - $ref: "#/components/parameters/ToolId"
+      responses:
+        "200":
+          description: The tool.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Tool" }
+        "404": { $ref: "#/components/responses/ToolNotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/ServerError" }
+    post:
+      operationId: runTool
+      summary: Run a tool.
+      description: |
+        The body is the tool's inputs. It runs on your key at the price of the tool's own address
+        (`POST /tools/scrape` costs what `POST /scrape` costs). A failed run is not charged.
+        A tool may already have run when a 500 or a lost connection hides the answer, so clients
+        do not send it again.
+      externalDocs:
+        url: https://crawl4ai.com/docs/tools/
+      parameters:
+        - $ref: "#/components/parameters/ToolId"
+        - name: Crawl4AI-Fresh
+          in: header
+          description: "`true` skips the cache and fetches live, at the live price."
+          schema: { type: string, enum: ["true"] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: The tool's inputs, as `GET /tools/{id}` lists them.
+              additionalProperties: true
+      responses:
+        "200":
+          description: The run, the same shape for every tool.
+          headers:
+            x-c4-cost: { $ref: "#/components/headers/Cost" }
+            x-c4-balance: { $ref: "#/components/headers/Balance" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ToolRun" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402": { $ref: "#/components/responses/PaymentRequired" }
+        "404": { $ref: "#/components/responses/ToolNotFound" }
+        "422": { $ref: "#/components/responses/InvalidInput" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/ToolRunServerError" }
+        "502": { $ref: "#/components/responses/ServerError" }
+        "503": { $ref: "#/components/responses/ToolFailing" }
+        "504": { $ref: "#/components/responses/ServerError" }
+
+  /tools/{id}/estimate:
+    post:
+      operationId: estimateTool
+      summary: What a run would cost, before it runs.
+      description: The same body as a run. Free.
+      externalDocs:
+        url: https://crawl4ai.com/docs/tools/
+      parameters:
+        - $ref: "#/components/parameters/ToolId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "200":
+          description: The estimate.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ToolEstimate" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/ToolNotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
 components:
   securitySchemes:
     bearer:
@@ -469,6 +607,12 @@ components:
       required: true
       description: The `job_id` from `POST /scrape/jobs`.
       schema: { type: string }
+    ToolId:
+      name: id
+      in: path
+      required: true
+      description: A tool id from `GET /tools`, for example `amazon-product`.
+      schema: { type: string, pattern: "^[a-z0-9-]{1,64}$" }
     Query512:
       name: q
       in: query
@@ -525,6 +669,30 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    ToolNotFound:
+      description: "`tool_not_found`: no tool with that id. `did_you_mean` lists the closest ids."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    InvalidInput:
+      description: "`invalid_input`: the body is not the tool's inputs. `details` names the problem. Not charged."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ToolRunServerError:
+      description: |
+        Our fault, but the tool may already have run and been charged before the error.
+        Do not send the run again on its own; check Usage first, or ask with the `request_id`.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ToolFailing:
+      description: |
+        `tool_failing`: the tool's daily check is failing, so it was not run. Not charged.
+        Sending it again does not help. Any other 503 means the service was busy: retry.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
     ServerError:
       description: Our fault, or the service was busy. Not charged. Safe to retry.
       content:
@@ -551,6 +719,20 @@ components:
           type: object
           description: Links that fix the problem, for example `subscribe`.
           additionalProperties: true
+        details:
+          type: array
+          description: "`/tools` only: what is wrong with the inputs."
+          items:
+            type: object
+            properties:
+              input: { type: string }
+              problem: { type: string }
+        did_you_mean:
+          type: array
+          description: "`/tools` only: the closest tool ids, on `tool_not_found`."
+          items: { type: string }
+        tool: { type: string, description: "`/tools` only: the tool called." }
+        request_id: { type: string, description: "`/tools` only: quote it when you report a problem." }
 
     ScrapeOptions:
       type: object
@@ -930,6 +1112,101 @@ components:
         units:
           type: integer
           description: Units this call was billed.
+
+    Tool:
+      type: object
+      required: [id]
+      description: |
+        `GET /tools` gives the summary fields; `GET /tools/{id}` adds `description`, `inputs`,
+        `output`, `examples` and `input_schema`, and gives `cost` as an object.
+      properties:
+        id: { type: string, examples: [amazon-product] }
+        name:
+          type: array
+          description: The name as [lead word, rest], for example `["Amazon", "product"]`.
+          items: { type: string }
+        source: { type: string, description: "The site, for example `amazon`." }
+        kind: { $ref: "#/components/schemas/OpenString" }
+        summary: { type: string }
+        cost:
+          description: Text like `1 cr` in the list; an object with `text` and `rule` in `GET /tools/{id}`.
+        typical: { type: string, description: "A typical run time, for example `3.1 s`." }
+        status: { $ref: "#/components/schemas/OpenString" }
+        essential: { type: boolean, description: Works on any website. }
+        beta: { type: boolean }
+        description: { type: string }
+        inputs:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              type: { type: string }
+              required: { type: boolean }
+              help: { type: string }
+              example: {}
+        output:
+          type: object
+          properties:
+            fields:
+              type: array
+              items: { type: object }
+        examples:
+          type: array
+          items:
+            type: object
+            properties:
+              label: { type: string }
+              input: { type: object }
+        input_schema:
+          type: object
+          description: A JSON Schema of the inputs.
+
+    ToolList:
+      type: object
+      required: [tools]
+      properties:
+        tools:
+          type: array
+          items: { $ref: "#/components/schemas/Tool" }
+        total: { type: integer, description: Tools that match. }
+        next_cursor:
+          type: [string, "null"]
+          description: The next page's `cursor`; null on the last page.
+        counts:
+          type: object
+          description: Tools by kind, and the number of sites.
+
+    ToolEstimate:
+      type: object
+      description: |
+        `text` says the price in words and `rule` how it is set. Some tools (`scrape`) answer
+        in the run shape instead, with their estimate in `data`.
+      properties:
+        tool: { type: string }
+        text: { type: string, examples: ["1 cr"] }
+        rule: { type: string }
+        data:
+          type: object
+          description: A tool's own estimate, for example `text`, `min` and `max`.
+
+    ToolRun:
+      type: object
+      required: [tool]
+      description: A tool that returns rows puts them under `rows`; everything else of its answer is under `data`.
+      properties:
+        tool: { type: string }
+        request_id: { type: string }
+        took_ms: { type: integer }
+        usage:
+          type: object
+          properties:
+            credits: { type: [number, "null"] }
+        rows:
+          type: array
+          items: { type: object }
+        data:
+          description: The rest of the tool's answer.
 
     Link:
       type: object

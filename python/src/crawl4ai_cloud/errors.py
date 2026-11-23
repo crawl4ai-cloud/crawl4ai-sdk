@@ -10,7 +10,8 @@ class Crawl4AIError(Exception):
 
     `status` is the HTTP status (None when no answer came back), `code` the server's short code
     (`no_credit`, `blocked`, ...), `message` text you can show to people as it is, and `actions`
-    the server's links that fix the problem (for example `subscribe`).
+    the server's links that fix the problem (for example `subscribe`). `body` is the whole error
+    answer, with extra fields such as `details` or `did_you_mean` when the server sends them.
     """
 
     def __init__(
@@ -20,12 +21,14 @@ class Crawl4AIError(Exception):
         status: int | None = None,
         code: str | None = None,
         actions: dict[str, Any] | None = None,
+        body: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.message = message
         self.status = status
         self.code = code
         self.actions = actions
+        self.body = body
 
 
 class BadRequestError(Crawl4AIError):

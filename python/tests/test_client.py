@@ -13,6 +13,7 @@ from crawl4ai_cloud import (
     BadRequestError,
     BlockedError,
     Crawl4AI,
+    NotFoundError,
     PaymentRequiredError,
     RateLimitError,
     ServerError,
@@ -322,3 +323,83 @@ def test_async_client_retries_and_streams(monkeypatch):
 
     page, items = asyncio.run(run())
     assert page.markdown == "# Hi" and [i.url for i in items] == ["https://a.com"] and waits == [2.0]
+
+
+def test_tools_find_sends_the_filters_and_reads_the_page():
+    client, requests = fake(httpx.Response(200, json={
+        "tools": [{"id": "amazon-product", "name": ["Amazon", "product"], "cost": "1 cr", "status": "verified"}],
+        "total": 3, "next_cursor": "2",
+    }))
+    page = client.tools.find("amazon product", kind="sites", essential=True, limit=2)
+    assert requests[0].url.path == "/tools"
+    assert dict(requests[0].url.params) == {"q": "amazon product", "kind": "sites", "essential": "true", "limit": "2"}
+    assert page.tools[0].id == "amazon-product" and page.tools[0].cost == "1 cr" and page.next_cursor == "2"
+
+
+def test_tools_get_and_estimate_read_the_tool():
+    client, requests = fake(
+        httpx.Response(200, json={"id": "scrape", "inputs": [{"name": "url", "required": True}], "input_schema": {}}),
+        httpx.Response(200, json={"tool": "amazon-product", "text": "1 cr", "rule": "1 credit a run"}),
+    )
+    assert client.tools.get("scrape").inputs[0]["name"] == "url"
+    assert client.tools.estimate("amazon-product", {"product": "B0"}).text == "1 cr"
+    assert requests[1].method == "POST" and requests[1].url.path == "/tools/amazon-product/estimate"
+    assert json.loads(requests[1].content) == {"product": "B0"}
+
+
+def test_tools_run_posts_the_inputs_and_fresh_and_reads_rows():
+    client, requests = fake(httpx.Response(
+        200, headers={"x-c4-cost": "1.000"},
+        json={"tool": "amazon-product", "request_id": "req_1", "took_ms": 9, "usage": {"credits": 1}, "rows": [{"asin": "B0"}]},
+    ))
+    run = client.tools.run("amazon-product", {"product": "B0", "fresh": "an input, not the option"}, fresh=True)
+    assert json.loads(requests[0].content) == {"product": "B0", "fresh": "an input, not the option"}
+    assert requests[0].headers["crawl4ai-fresh"] == "true"
+    assert run.rows == [{"asin": "B0"}] and run.request_id == "req_1" and run.cost == 1.0
+
+
+def test_tools_errors_keep_details_and_did_you_mean():
+    client, _ = fake(
+        httpx.Response(422, json={"error": "invalid_input", "details": [{"problem": "url is required"}], "tool": "scrape"}),
+        httpx.Response(404, json={"error": "tool_not_found", "did_you_mean": ["amazon-product"]}),
+    )
+    with pytest.raises(BadRequestError) as e:
+        client.tools.run("scrape", {})
+    assert e.value.code == "invalid_input" and e.value.message == "invalid_input: url is required"
+    with pytest.raises(NotFoundError) as e:
+        client.tools.get("amazon-produc")
+    assert e.value.body["did_you_mean"] == ["amazon-product"]
+
+
+def test_tools_run_is_not_sent_again_after_a_500_and_tool_failing_is_not_retried(no_sleep):
+    client, requests = fake(httpx.Response(500), httpx.Response(503, json={"error": "tool_failing"}))
+    with pytest.raises(ServerError):
+        client.tools.run("amazon-product", {"product": "B0"})
+    with pytest.raises(ServerError) as e:
+        client.tools.find("amazon")
+    assert len(requests) == 2 and e.value.code == "tool_failing" and no_sleep == []
+
+
+def test_tool_id_that_is_a_folder_step_is_refused():
+    client, requests = fake()
+    with pytest.raises(ValueError):
+        client.tools.run("..", {})
+    assert requests == []
+
+
+def test_a_cost_header_that_is_not_a_number_does_not_fail_a_charged_call():
+    client, _ = fake(httpx.Response(200, headers={"x-c4-cost": "abc", "x-c4-balance": ""}, json=PAGE))
+    page = client.scrape("https://example.com")
+    assert page.markdown == "# Hi" and page.cost is None and page.balance is None
+
+
+def test_async_tools_find_and_run():
+    async def go():
+        answers = [httpx.Response(200, json={"tools": [{"id": "scrape"}]}),
+                   httpx.Response(200, json={"tool": "scrape", "data": {"markdown": "# Hi"}})]
+        transport = httpx.MockTransport(lambda request: answers.pop(0))
+        async with AsyncCrawl4AI("sk_test", http_client=httpx.AsyncClient(transport=transport)) as client:
+            found = await client.tools.find("scrape")
+            run = await client.tools.run(found.tools[0].id, {"url": "https://example.com"})
+            return run.data["markdown"]
+    assert asyncio.run(go()) == "# Hi"

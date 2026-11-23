@@ -2,7 +2,8 @@
 
 Official client libraries for the [Crawl4AI Cloud API](https://api.crawl4ai.com/docs):
 `/scrape` a page to Markdown, `/extract` it to JSON, `/search` the web, `/serp` for Google's results
-as data, `/answer` a question with sources, and batches of many URLs. One key, three regions,
+as data, `/answer` a question with sources, batches of many URLs, and the Toolkit (`/tools`): every
+tool, including a ready one for each supported site, called the same way. One key, three regions,
 routed to the nearest one.
 
 | Language | Folder | Package | Install |
@@ -12,7 +13,8 @@ routed to the nearest one.
 | Go | [`go/`](go/) | `github.com/crawl4ai-cloud/crawl4ai-sdk/go` | `go get github.com/crawl4ai-cloud/crawl4ai-sdk/go` |
 | Rust | [`rust/`](rust/) | `crawl4ai-cloud` (crates.io) | `cargo add crawl4ai-cloud` |
 
-The new SDKs are in progress. Until a folder has its first release, use the HTTP API directly
+The new SDKs are in progress. Until 2.0.0 is released, PyPI and npm still have the old 1.x SDK:
+install from this repository as each folder's README says, or use the HTTP API directly
 (docs: https://api.crawl4ai.com/docs) or the MCP server (https://crawl4ai.com/llms.txt).
 
 ## Your API key

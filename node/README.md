@@ -8,6 +8,9 @@ no dependencies.
 npm install crawl4ai-cloud
 ```
 
+Until 2.0.0 is on npm, `npm install` gets the old 1.x SDK. To use this one, clone this repository,
+run `npm install && npm run build` in `node/`, then `npm install /path/to/crawl4ai-sdk/node` in your project.
+
 ```ts
 import { Crawl4AI } from "crawl4ai-cloud";
 
@@ -36,6 +39,10 @@ The package is an ES module. From CommonJS, `require("crawl4ai-cloud")` works on
 | `serp(q)` | Google's results page as data (beta) |
 | `answer(q)` | A direct answer with sources (experimental) |
 | `extract(url, { instruction })` | Structured JSON from a page |
+| `tools.find(q)` | The Toolkit catalog: every tool, best match first (free) |
+| `tools.get(toolId)` | One tool's inputs, output, cost and examples (free) |
+| `tools.estimate(toolId, inputs)` | What a run would cost (free) |
+| `tools.run(toolId, inputs)` | Runs any tool, the same way for all |
 
 Every method has a doc comment with an example; your editor shows it.
 
@@ -54,6 +61,25 @@ for await (const item of client.getScrapeJobResults(job.job_id)) {
   console.log(item.url, item.ok);
 }
 ```
+
+### Toolkit: every tool, one way
+
+Every kind of data is a tool: `scrape`, `search` and `extract` work on any website, and a ready
+tool exists for each supported site (`amazon-product`, `linkedin-company`, `youtube-captions`, ...).
+
+```ts
+const [tool] = (await client.tools.find("amazon product")).tools; // free
+console.log((await client.tools.get(tool.id)).inputs?.map((input) => input.name));
+console.log((await client.tools.estimate(tool.id, { product: "B0F5HSNDXF" })).text);
+
+const run = await client.tools.run(tool.id, { product: "B0F5HSNDXF" });
+console.log(run.rows, run.usage); // a tool that returns rows puts them in rows; the rest is in run.data
+```
+
+`run(id, inputs, { fresh: true })` skips the cache, at the live price. A failed run is not charged,
+and a run is never sent twice after a 500 or a lost connection. An unknown id throws
+`NotFoundError` with the closest ids in `e.body.did_you_mean`; wrong inputs throw
+`BadRequestError` naming the problem.
 
 ### Search, Google results, answers, extraction
 

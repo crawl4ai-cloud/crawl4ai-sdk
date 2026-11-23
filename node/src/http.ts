@@ -46,11 +46,14 @@ export function headers(apiKey?: string): Record<string, string> {
 }
 
 /**
- * True when a request that got `status` is worth sending again.
- * 429 and 503 mean the server did not start the work, so every request retries them.
+ * True when a request that got `error` is worth sending again.
+ * 429 and 503 mean the server did not start the work, so every request retries them, except a
+ * 503 `tool_failing`: the tool's daily check is failing, so the same call fails again.
  * 500 and 504 retry only when `safe` (sending the request twice cannot run the work twice).
  */
-export function shouldRetry(status: number, safe: boolean): boolean {
+export function shouldRetry(error: Crawl4AIError, safe: boolean): boolean {
+  const { status, code } = error;
+  if (code === "tool_failing") return false;
   return status === 429 || status === 503 || (safe && (status === 500 || status === 504));
 }
 
@@ -73,23 +76,31 @@ export const clock = {
  * Builds the error for an error answer from its status and body text.
  *
  * The server sends `{"error": code, "message": ..., "actions": ...}`, `/scrape` sends
- * `{"ok": false, "reason": code}`, and some errors send plain text or nothing.
+ * `{"ok": false, "reason": code}`, `/tools` adds `details` or `did_you_mean`, and some errors
+ * send plain text or nothing.
  */
 export function errorFrom(status: number, text: string): Crawl4AIError {
-  let body: Record<string, unknown> = {};
+  let body: Record<string, unknown> | undefined;
   try {
     const parsed: unknown = JSON.parse(text);
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) body = parsed as Record<string, unknown>;
   } catch {
     // plain text or empty: the message falls back to the text
   }
-  const rawCode = body.error ?? body.reason;
-  const code = rawCode == null ? undefined : String(rawCode);
+  const rawCode = body?.error || body?.reason;
+  const code = rawCode == null || rawCode === "" ? undefined : String(rawCode);
+  // /tools says what is wrong in `details`: [{"input": "url", "problem": "url is required"}]
+  const details = Array.isArray(body?.details) ? (body.details as Array<{ problem?: unknown }>) : [];
+  const problems = details.map((d) => d?.problem).filter(Boolean);
+  const detail = code && problems.length ? `${code}: ${problems.join("; ")}` : code;
   const message =
-    (typeof body.message === "string" && body.message) || code || text.trim().slice(0, 500) || `HTTP ${status}`;
+    (typeof body?.message === "string" && body.message) ||
+    detail ||
+    (body ? "" : text.trim().slice(0, 500)) ||
+    `HTTP ${status}`;
   const ErrorClass = ERROR_BY_STATUS[status] ?? (status >= 500 ? ServerError : Crawl4AIError);
-  const actions = body.actions as Record<string, unknown> | undefined;
-  return new ErrorClass(message, { status, code, actions });
+  const actions = body?.actions as Record<string, unknown> | undefined;
+  return new ErrorClass(message, { status, code, actions, body });
 }
 
 /** Returns the fields that are not undefined: the request leaves out what the caller did not set. */
@@ -108,6 +119,15 @@ export function query(fields: object): string {
 }
 
 /**
+ * Returns `/tools/<toolId><tail>`, with the id escaped for a URL.
+ * Throws for an empty id or `.` / `..`, which a URL reads as a folder step.
+ */
+export function toolPath(toolId: string, tail = ""): string {
+  if (toolId === "" || toolId === "." || toolId === "..") throw new TypeError(`Not a tool id: ${JSON.stringify(toolId)}`);
+  return `/tools/${encodeURIComponent(toolId)}${tail}`;
+}
+
+/**
  * Returns `/scrape/jobs/<jobId><tail>`, with the id escaped for a URL.
  * Throws for an empty id or `.` / `..`, which a URL reads as a folder step.
  */
@@ -116,15 +136,19 @@ export function jobPath(jobId: string, tail = ""): string {
   return `/scrape/jobs/${encodeURIComponent(jobId)}${tail}`;
 }
 
-/** Reads the cost headers into numbers; a header the server did not send is left out. */
+/**
+ * Reads the cost headers into numbers. A header the server did not send, or one that is not a
+ * number, is undefined, and so replaces a body field of the same name.
+ */
 export function costs(response: Response): { cost?: number; balance?: number; allowance_left?: number } {
   const read = (name: string) => {
-    const value = response.headers.get(name);
-    return value == null ? undefined : Number(value);
+    const text = response.headers.get(name)?.trim();
+    const value = Number(text);
+    return text && Number.isFinite(value) ? value : undefined;
   };
-  return body({
+  return {
     cost: read("x-c4-cost"),
     balance: read("x-c4-balance"),
     allowance_left: read("x-c4-allowance-left"),
-  });
+  };
 }

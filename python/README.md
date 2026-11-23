@@ -7,6 +7,9 @@ Markdown and JSON, web search, Google results and answers. Python 3.10+, one dep
 pip install crawl4ai-cloud-sdk
 ```
 
+Until 2.0.0 is on PyPI, `pip install` gets the old 1.x SDK. Install this one from GitHub:
+`pip install "git+https://github.com/crawl4ai-cloud/crawl4ai-sdk#subdirectory=python"`.
+
 ```python
 from crawl4ai_cloud import Crawl4AI
 
@@ -33,6 +36,10 @@ Get a key at https://crawl4ai.com. Pass it as `Crawl4AI(api_key="sk_live_...")` 
 | `serp(q)` | Google's results page as data (beta) |
 | `answer(q)` | A direct answer with sources (experimental) |
 | `extract(url, instruction=...)` | Structured JSON from a page |
+| `tools.find(q)` | The Toolkit catalog: every tool, best match first (free) |
+| `tools.get(tool_id)` | One tool's inputs, output, cost and examples (free) |
+| `tools.estimate(tool_id, inputs)` | What a run would cost (free) |
+| `tools.run(tool_id, inputs)` | Runs any tool, the same way for all |
 
 Every method has a doc comment with an example: `help(Crawl4AI.scrape)`.
 
@@ -65,6 +72,24 @@ if result.answered:
 
 data = client.extract("https://news.ycombinator.com", instruction="the top 3 story titles").data
 ```
+
+### Toolkit: every tool, one way
+
+Every kind of data is a tool: `scrape`, `search` and `extract` work on any website, and a ready
+tool exists for each supported site (`amazon-product`, `linkedin-company`, `youtube-captions`, ...).
+
+```python
+tool = client.tools.find("amazon product").tools[0]     # free
+print([i["name"] for i in client.tools.get(tool.id).inputs])
+print(client.tools.estimate(tool.id, {"product": "B0F5HSNDXF"}).text)
+
+run = client.tools.run(tool.id, {"product": "B0F5HSNDXF"})
+print(run.rows, run.usage)  # a tool that returns rows puts them in rows; the rest is in run.data
+```
+
+`run(..., fresh=True)` skips the cache, at the live price. A failed run is not charged, and a run
+is never sent twice after a 500 or a lost connection. An unknown id raises `NotFoundError` with
+the closest ids in `e.body["did_you_mean"]`; wrong inputs raise `BadRequestError` naming the problem.
 
 ### Async
 

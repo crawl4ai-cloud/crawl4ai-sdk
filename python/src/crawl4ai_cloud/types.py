@@ -18,8 +18,12 @@ if TYPE_CHECKING:
 
 
 def _credits(value: Any) -> float | None:
-    """Turns a credits figure (the server sends text like "0.500") into a float; None stays None."""
-    return None if value is None else float(value)
+    """Turns a credits figure (the server sends text like "0.500") into a float. None, or text
+    that is not a number, is None: a bad header must not fail a call that was already charged."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 @dataclass(kw_only=True, slots=True)
@@ -252,3 +256,66 @@ class ExtractResult(Response):
     data: Any = None
     usage: dict[str, Any] | None = None
     ms: int | None = None
+
+
+@dataclass(kw_only=True, slots=True)
+class Tool(Model):
+    """One tool of the Toolkit. `find` fills the summary fields: `id`, `name` (`[lead word, rest]`),
+    `source` (the site), `kind`, `summary`, `cost` (text like `1 cr`), `typical` (a typical run time),
+    `status` (`verified`, `beta` or `failing`), `essential` and `beta`. `get` adds `description`,
+    `inputs` (each with `name`, `type`, `required`, `help`, `example`), `output` (`output["fields"]`),
+    `examples` and `input_schema` (a JSON Schema of the inputs), and gives `cost` as an object."""
+
+    id: str | None = None
+    name: list[str] | None = None
+    source: str | None = None
+    kind: str | None = None
+    summary: str | None = None
+    cost: Any = None
+    typical: str | None = None
+    status: str | None = None
+    essential: bool | None = None
+    beta: bool | None = None
+    description: str | None = None
+    inputs: list[dict[str, Any]] | None = None
+    output: dict[str, Any] | None = None
+    examples: list[dict[str, Any]] | None = None
+    input_schema: dict[str, Any] | None = None
+
+
+@dataclass(kw_only=True, slots=True)
+class ToolList(Model):
+    """The answer to `tools.find`: the `tools` on this page, best match first, the `total` that
+    match, and `next_cursor` for the next page (None on the last page)."""
+
+    tools: list[Tool] | None = None
+    total: int | None = None
+    next_cursor: str | None = None
+    counts: dict[str, Any] | None = None
+
+    _nested: ClassVar[dict[str, type[Model]]] = {"tools": Tool}
+
+
+@dataclass(kw_only=True, slots=True)
+class ToolEstimate(Model):
+    """The answer to `tools.estimate`: `text` says the price in words (`1 cr`) and `rule` how it is
+    set. Some tools give their own estimate in `data` instead (`data["text"]`, `data["min"]`, `data["max"]`)."""
+
+    tool: str | None = None
+    text: str | None = None
+    rule: str | None = None
+    data: Any = None
+
+
+@dataclass(kw_only=True, slots=True)
+class ToolRun(Response):
+    """The answer to `tools.run`, the same shape for every tool: the `rows` it found (a tool that
+    returns rows), the rest of its answer in `data`, `usage["credits"]`, `took_ms` and the
+    `request_id` to quote when you report a problem."""
+
+    tool: str | None = None
+    request_id: str | None = None
+    took_ms: int | None = None
+    usage: dict[str, Any] | None = None
+    rows: list[dict[str, Any]] | None = None
+    data: Any = None
