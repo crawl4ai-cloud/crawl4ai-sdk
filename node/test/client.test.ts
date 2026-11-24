@@ -77,7 +77,7 @@ function fake(...answers: Response[]): { client: Crawl4AI; sent: Sent[] } {
 }
 
 test("a missing key throws; the env key is sent, and CRAWL4AI_API_KEY wins", async () => {
-  assert.throws(() => new Crawl4AI(), AuthenticationError);
+  await assert.rejects(new Crawl4AI({ fetch: async () => assert.fail("sent") }).scrape("https://example.com"), AuthenticationError);
   const seen: string[] = [];
   const fetch = async (_url: string | URL | Request, init?: RequestInit) => {
     seen.push((init?.headers as Record<string, string>).Authorization ?? "");
@@ -487,4 +487,30 @@ test("the default fetch is called as a plain function, as a browser needs", asyn
     globalThis.fetch = real;
   }
   assert.equal(self, globalThis); // not the client: a browser's fetch throws "Illegal invocation" then
+});
+
+test("without a key only tools.find and tools.get are sent", async () => {
+  const seen: (string | undefined)[] = [];
+  const fetch = async (_url: string | URL | Request, init?: RequestInit) => {
+    seen.push((init?.headers as Record<string, string>).Authorization);
+    return json({ tools: [], id: "scrape" });
+  };
+  const client = new Crawl4AI({ fetch });
+  await client.tools.find("amazon");
+  await client.tools.get("scrape");
+  await assert.rejects(client.tools.run("scrape", {}), AuthenticationError);
+  await assert.rejects(client.tools.estimate("scrape", {}), AuthenticationError);
+  assert.deepEqual(seen, [undefined, undefined]);
+});
+
+test("tools.batch posts the tool and inputs and is not sent again after a 500", async () => {
+  const job = { tool: "scrape", request_id: "req_1", data: { job_id: "j_1", status: "pending" } };
+  let { client, sent } = fake(json(job, 202));
+  const run = await client.tools.batch("scrape", [{ url: "https://example.com" }]);
+  assert.equal(sent[0]!.url.pathname, "/tools/batch");
+  assert.deepEqual(sent[0]!.json, { tool: "scrape", inputs: [{ url: "https://example.com" }] });
+  assert.equal((run.data as { job_id: string }).job_id, "j_1");
+  ({ client, sent } = fake(new Response(null, { status: 500 }), json(job, 202)));
+  await assert.rejects(client.tools.batch("scrape", [{ url: "https://example.com" }]), ServerError);
+  assert.equal(sent.length, 1);
 });

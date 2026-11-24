@@ -48,14 +48,22 @@ _ERROR_BY_STATUS: dict[int, type[Crawl4AIError]] = {
 
 def headers(api_key: str | None) -> dict[str, str]:
     """Returns the headers of every request. The key is `api_key`, else the first env var of
-    `_KEY_ENV_VARS` that is set; with neither it raises AuthenticationError. A key with a character
-    a header cannot carry raises too, without the key: httpx's own error would quote it whole."""
+    `_KEY_ENV_VARS` that is set. With neither there is no Authorization header: the free catalog
+    calls still work and every other call raises (see `require_key`). A key with a character
+    a header cannot carry raises, without the key: httpx's own error would quote it whole."""
     key = (api_key or next((os.environ[n] for n in _KEY_ENV_VARS if os.environ.get(n)), "")).strip()
+    user_agent = {"User-Agent": f"crawl4ai-cloud-python/{__version__}"}
     if not key:
-        raise AuthenticationError("No API key: pass api_key=... or set CRAWL4AI_API_KEY.")
+        return user_agent
     if not re.fullmatch(r"[\x21-\x7e]+", key):
         raise AuthenticationError("The API key has a character that is not allowed.")
-    return {"Authorization": f"Bearer {key}", "User-Agent": f"crawl4ai-cloud-python/{__version__}"}
+    return {"Authorization": f"Bearer {key}", **user_agent}
+
+
+def require_key(headers: dict[str, str]) -> None:
+    """Raises AuthenticationError, before anything is sent, when the client has no key."""
+    if "Authorization" not in headers:
+        raise AuthenticationError("No API key: pass api_key=... or set CRAWL4AI_API_KEY.")
 
 
 def should_retry(error: Crawl4AIError, safe: bool) -> bool:

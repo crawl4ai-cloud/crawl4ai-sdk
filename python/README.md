@@ -36,10 +36,11 @@ Get a key at https://crawl4ai.com. Pass it as `Crawl4AI(api_key="sk_live_...")` 
 | `serp(q)` | Google's results page as data (beta) |
 | `answer(q)` | A direct answer with sources (experimental) |
 | `extract(url, instruction=...)` | Structured JSON from a page |
-| `tools.find(q)` | The Toolkit catalog: every tool, best match first (free) |
-| `tools.get(tool_id)` | One tool's inputs, output, cost and examples (free) |
+| `tools.find(q)` | The Toolkit catalog: every tool, best match first (free, no key needed) |
+| `tools.get(tool_id)` | One tool's inputs, output, cost and examples (free, no key needed) |
 | `tools.estimate(tool_id, inputs)` | What a run would cost (free) |
 | `tools.run(tool_id, inputs)` | Runs any tool, the same way for all |
+| `tools.batch(tool_id, inputs)` | Runs a tool on many inputs as one background job |
 
 Every method has a doc comment with an example: `help(Crawl4AI.scrape)`.
 

@@ -56,7 +56,7 @@ def ndjson(*lines):
 
 def test_key_from_env_and_missing(monkeypatch):
     with pytest.raises(AuthenticationError):
-        Crawl4AI()
+        Crawl4AI().scrape("https://example.com")  # no transport: raising here means nothing was sent
     monkeypatch.setenv("CRAWL4AI_KEY", "sk_old_name")
     assert Crawl4AI()._headers["Authorization"] == "Bearer sk_old_name"
     monkeypatch.setenv("CRAWL4AI_API_KEY", "sk_new_name")
@@ -393,13 +393,60 @@ def test_a_cost_header_that_is_not_a_number_does_not_fail_a_charged_call():
     assert page.markdown == "# Hi" and page.cost is None and page.balance is None
 
 
-def test_async_tools_find_and_run():
+def test_async_tools_find_run_and_batch():
     async def go():
         answers = [httpx.Response(200, json={"tools": [{"id": "scrape"}]}),
-                   httpx.Response(200, json={"tool": "scrape", "data": {"markdown": "# Hi"}})]
+                   httpx.Response(200, json={"tool": "scrape", "data": {"markdown": "# Hi"}}),
+                   httpx.Response(202, json={"tool": "scrape", "data": {"job_id": "j_1"}})]
         transport = httpx.MockTransport(lambda request: answers.pop(0))
         async with AsyncCrawl4AI("sk_test", http_client=httpx.AsyncClient(transport=transport)) as client:
             found = await client.tools.find("scrape")
             run = await client.tools.run(found.tools[0].id, {"url": "https://example.com"})
-            return run.data["markdown"]
-    assert asyncio.run(go()) == "# Hi"
+            job = await client.tools.batch("scrape", [{"url": "https://example.com"}])
+            return run.data["markdown"], job.data["job_id"]
+    assert asyncio.run(go()) == ("# Hi", "j_1")
+
+
+def test_without_a_key_only_find_and_get_are_sent():
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={"tools": [], "id": "scrape"})
+
+    client = Crawl4AI(http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    client.tools.find("amazon")
+    client.tools.get("scrape")
+    assert [("authorization" in r.headers) for r in requests] == [False, False]
+    for call in (lambda: client.tools.run("scrape", {}), lambda: client.tools.estimate("scrape", {})):
+        with pytest.raises(AuthenticationError):
+            call()
+    assert len(requests) == 2
+
+
+def test_tools_batch_posts_tool_and_inputs_and_is_not_sent_again_after_a_500():
+    job = {"tool": "scrape", "request_id": "req_1", "data": {"job_id": "j_1", "status": "pending"}}
+    client, requests = fake(httpx.Response(202, json=job))
+    run = client.tools.batch("scrape", [{"url": "https://example.com"}])
+    assert (requests[0].url.path, json.loads(requests[0].content)) == (
+        "/tools/batch",
+        {"tool": "scrape", "inputs": [{"url": "https://example.com"}]},
+    )
+    assert run.data["job_id"] == "j_1"
+    client, requests = fake(httpx.Response(500), httpx.Response(202, json=job))
+    with pytest.raises(ServerError):
+        client.tools.batch("scrape", [{"url": "https://example.com"}])
+    assert len(requests) == 1
+
+
+def test_without_a_key_find_does_not_send_the_http_clients_own_credentials():
+    seen = []
+
+    def handler(request):
+        seen.append(request.headers.get("authorization"))
+        return httpx.Response(200, json={"tools": []})
+
+    transport = httpx.MockTransport(handler)
+    Crawl4AI(http_client=httpx.Client(headers={"Authorization": "Bearer other"}, transport=transport)).tools.find()
+    Crawl4AI(http_client=httpx.Client(auth=("user", "pass"), transport=transport)).tools.find()
+    assert seen == [None, None]

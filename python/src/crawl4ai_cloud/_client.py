@@ -48,7 +48,8 @@ class Crawl4AI:
     """The Crawl4AI Cloud client. Every method is one API call and blocks until the answer comes.
 
     Params:
-        `api_key`: your key; when None it is read from `CRAWL4AI_API_KEY`.
+        `api_key`: your key; when None it is read from `CRAWL4AI_API_KEY`. Without one only
+            `tools.find` and `tools.get` work; every other call raises AuthenticationError.
         `base_url`: the API address. `timeout`: seconds to wait for one answer.
         `max_retries`: how many times a busy or rate-limited call is sent again.
         `http_client`: your own `httpx.Client` (for a proxy, say); the SDK does not close it.
@@ -99,6 +100,7 @@ class Crawl4AI:
         headers: dict[str, str] | None = None,
         safe: bool = True,
         stream: bool = False,
+        keyless: bool = False,
     ) -> httpx.Response:
         """Sends one request and returns the success answer, or raises.
 
@@ -109,7 +111,10 @@ class Crawl4AI:
         3. Any other error answer raises the exception `error_from` picks.
         The body is read after the loop, so a 200 cut off midway is never sent again (it may
         already have run). With `stream`, the caller reads the body and must close the answer.
+        Without a key only a `keyless` call is sent; any other raises AuthenticationError.
         """
+        if not keyless:
+            _http.require_key(self._headers)
         request = self._http.build_request(
             method,
             self._base_url + path,
@@ -118,11 +123,13 @@ class Crawl4AI:
             headers={**self._headers, **(headers or {})},
             timeout=self._timeout,
         )
+        if "Authorization" not in self._headers:  # no key: never send the http_client's own credentials
+            request.headers.pop("Authorization", None)
         for attempt in range(self._max_retries + 1):
             last = attempt == self._max_retries
             # ---- 1. Send ----
             try:
-                response = self._http.send(request, stream=True)
+                response = self._http.send(request, stream=True, auth=None)
             except httpx.TimeoutException as e:
                 raise APITimeoutError(f"No answer from {path} in time: {e}") from e
             except httpx.TransportError as e:
@@ -483,9 +490,12 @@ class AsyncCrawl4AI:
         headers: dict[str, str] | None = None,
         safe: bool = True,
         stream: bool = False,
+        keyless: bool = False,
     ) -> httpx.Response:
         """Sends one request and returns the success answer, or raises. The steps are the ones of
         `Crawl4AI._open`."""
+        if not keyless:
+            _http.require_key(self._headers)
         request = self._http.build_request(
             method,
             self._base_url + path,
@@ -494,10 +504,12 @@ class AsyncCrawl4AI:
             headers={**self._headers, **(headers or {})},
             timeout=self._timeout,
         )
+        if "Authorization" not in self._headers:  # no key: never send the http_client's own credentials
+            request.headers.pop("Authorization", None)
         for attempt in range(self._max_retries + 1):
             last = attempt == self._max_retries
             try:
-                response = await self._http.send(request, stream=True)
+                response = await self._http.send(request, stream=True, auth=None)
             except httpx.TimeoutException as e:
                 raise APITimeoutError(f"No answer from {path} in time: {e}") from e
             except httpx.TransportError as e:
@@ -712,7 +724,8 @@ class Tools:
 
     A tool is one kind of data: `scrape`, `search` and `extract` work on any website, and a ready
     tool exists for each supported site (`amazon-product`, `linkedin-company`, ...). Find one with
-    `find`, read its inputs with `get`, price a run with `estimate`, run it with `run`.
+    `find`, read its inputs with `get`, price a run with `estimate`, run it with `run`, or
+    run it on many inputs as one job with `batch`.
 
     Example:
         from crawl4ai_cloud import Crawl4AI
@@ -736,7 +749,7 @@ class Tools:
         limit: int | None = None,
         cursor: str | None = None,
     ) -> ToolList:
-        """Lists the tools, best match for `q` first (`GET /tools`). Free.
+        """Lists the tools, best match for `q` first (`GET /tools`). Free, and works without a key.
 
         Params:
             `q`: a few words; every word must be in the tool's id, name, site, summary or search words.
@@ -753,11 +766,11 @@ class Tools:
         params = _http.body(
             q=q, kind=kind, source=source, status=status, essential="true" if essential else None, limit=limit, cursor=cursor
         )
-        return ToolList.from_dict(_http.parse(self._client._open("GET", "/tools", params=params).content, "/tools"))
+        return ToolList.from_dict(_http.parse(self._client._open("GET", "/tools", params=params, keyless=True).content, "/tools"))
 
     def get(self, tool_id: str) -> Tool:
         """One tool in full: its `inputs`, `output`, `cost`, `examples` and `input_schema` (`GET /tools/{id}`).
-        Free. An unknown id raises NotFoundError; its `body["did_you_mean"]` lists the closest ids.
+        Free, and works without a key. An unknown id raises NotFoundError; its `body["did_you_mean"]` lists the closest ids.
 
         Example:
             from crawl4ai_cloud import Crawl4AI
@@ -766,7 +779,7 @@ class Tools:
             print([i["name"] for i in tool.inputs])
         """
         path = _http.tool_path(tool_id)
-        return Tool.from_dict(_http.parse(self._client._open("GET", path).content, path))
+        return Tool.from_dict(_http.parse(self._client._open("GET", path, keyless=True).content, path))
 
     def estimate(self, tool_id: str, inputs: dict[str, Any]) -> ToolEstimate:
         """What a run with these `inputs` would cost, before it runs (`POST /tools/{id}/estimate`). Free.
@@ -803,6 +816,24 @@ class Tools:
             self._client._open("POST", _http.tool_path(tool_id), json=inputs, headers=headers, safe=False)
         )
 
+    def batch(self, tool_id: str, inputs: list[dict[str, Any]]) -> ToolRun:
+        """Runs a tool on many inputs as one background job and returns at once (`POST /tools/batch`).
+        The job is in `data`: wait for it with `wait_scrape_job(run.data["job_id"])`, then read it
+        with `get_scrape_job_results`. A tool with no batch raises BadRequestError. Never sent
+        twice after a 500 or a lost connection, so a job is never started twice.
+
+        Example:
+            from crawl4ai_cloud import Crawl4AI
+
+            client = Crawl4AI()
+            run = client.tools.batch("scrape", [{"url": "https://example.com"}, {"url": "https://example.org"}])
+            client.wait_scrape_job(run.data["job_id"])
+            for item in client.get_scrape_job_results(run.data["job_id"]):
+                print(item.url, item.ok)
+        """
+        fields = {"tool": tool_id, "inputs": inputs}
+        return ToolRun.from_response(self._client._open("POST", "/tools/batch", json=fields, safe=False))
+
 
 class AsyncTools:
     """The Toolkit for `AsyncCrawl4AI`, reached as `client.tools`. The methods are the ones of `Tools`,
@@ -837,13 +868,13 @@ class AsyncTools:
         params = _http.body(
             q=q, kind=kind, source=source, status=status, essential="true" if essential else None, limit=limit, cursor=cursor
         )
-        response = await self._client._open("GET", "/tools", params=params)
+        response = await self._client._open("GET", "/tools", params=params, keyless=True)
         return ToolList.from_dict(_http.parse(response.content, "/tools"))
 
     async def get(self, tool_id: str) -> Tool:
         """One tool in full. See `Tools.get`."""
         path = _http.tool_path(tool_id)
-        return Tool.from_dict(_http.parse((await self._client._open("GET", path)).content, path))
+        return Tool.from_dict(_http.parse((await self._client._open("GET", path, keyless=True)).content, path))
 
     async def estimate(self, tool_id: str, inputs: dict[str, Any]) -> ToolEstimate:
         """What a run would cost. See `Tools.estimate`."""
@@ -856,3 +887,8 @@ class AsyncTools:
         return ToolRun.from_response(
             await self._client._open("POST", _http.tool_path(tool_id), json=inputs, headers=headers, safe=False)
         )
+
+    async def batch(self, tool_id: str, inputs: list[dict[str, Any]]) -> ToolRun:
+        """Runs a tool on many inputs as one background job. See `Tools.batch`."""
+        fields = {"tool": tool_id, "inputs": inputs}
+        return ToolRun.from_response(await self._client._open("POST", "/tools/batch", json=fields, safe=False))

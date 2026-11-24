@@ -12,6 +12,8 @@ A new SDK for the current Crawl4AI Cloud API. Not compatible with 1.x; see "Movi
 - No dependencies. Node 20.19+, an ES module that CommonJS can `require`.
 - `client.tools`, the Toolkit: `find`, `get`, `estimate` and `run` call every tool at `/tools` the same way.
   A run is never sent twice after a 500 or a lost connection; a 503 `tool_failing` is not retried.
+  `find` and `get` work without a key; every other call still raises before it is sent.
+  `batch` runs a tool on many inputs as one job, read with the scrape job methods; never sent twice.
 - Errors keep the whole error answer in `.body` (`details`, `did_you_mean`).
 - `scrape`'s option is `bypassCache`, in the SDK's camelCase like every other option.
 - Works in the browser: the default `fetch` is no longer called as a method of the client.

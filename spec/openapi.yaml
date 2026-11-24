@@ -588,6 +588,52 @@ paths:
         "429": { $ref: "#/components/responses/RateLimited" }
         "500": { $ref: "#/components/responses/ServerError" }
 
+  /tools/batch:
+    post:
+      operationId: batchTool
+      summary: Run a tool on many inputs, as one background job.
+      description: |
+        Starts one job and answers at once, with the job under `data` (`job_id`, `status`, `poll`).
+        Read the job with `GET /scrape/jobs/{id}` and its results with `GET /scrape/jobs/{id}/results`.
+        Not every tool has a batch: one without answers 422. A site tool's job takes one input.
+        A job may already have started when a 500 or a lost connection hides the answer, so clients
+        do not send it again. `scrape` jobs honour `Idempotency-Key`: the same key returns the same
+        job, with `duplicate: true`.
+      externalDocs:
+        url: https://crawl4ai.com/docs/tools/
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          description: Any string; a `scrape` batch sent again with the same key returns the same job.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tool, inputs]
+              properties:
+                tool: { type: string, description: "The tool's id, for example `scrape`." }
+                inputs:
+                  type: array
+                  minItems: 1
+                  description: One object of the tool's inputs per run.
+                  items: { type: object, additionalProperties: true }
+      responses:
+        "202":
+          description: The job started; it is under `data`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ToolRun" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402": { $ref: "#/components/responses/PaymentRequired" }
+        "404": { $ref: "#/components/responses/ToolNotFound" }
+        "422": { $ref: "#/components/responses/InvalidInput" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/ToolRunServerError" }
+        "503": { $ref: "#/components/responses/ToolFailing" }
+
 components:
   securitySchemes:
     bearer:

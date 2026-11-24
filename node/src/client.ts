@@ -27,7 +27,10 @@ import type {
 const JOB_STOPPED = ["done", "paused"];
 
 export interface ClientOptions {
-  /** Your key; when not given it is read from `CRAWL4AI_API_KEY`. */
+  /**
+   * Your key; when not given it is read from `CRAWL4AI_API_KEY`. Without one only `tools.find`
+   * and `tools.get` work; every other call throws AuthenticationError.
+   */
   apiKey?: string;
   /** The API address. */
   baseUrl?: string;
@@ -47,6 +50,8 @@ interface Call {
   costs?: boolean;
   /** false for a call that must never run twice: it is not retried after a 500 or a lost connection. */
   safe?: boolean;
+  /** true for a free call that is sent even when the client has no key. */
+  keyless?: boolean;
 }
 
 /**
@@ -106,7 +111,8 @@ export interface FindToolsOptions {
  *
  * A tool is one kind of data: `scrape`, `search` and `extract` work on any website, and a ready
  * tool exists for each supported site (`amazon-product`, `linkedin-company`, ...). Find one with
- * `find`, read its inputs with `get`, price a run with `estimate`, run it with `run`.
+ * `find`, read its inputs with `get`, price a run with `estimate`, run it with `run`, or run it on
+ * many inputs as one job with `batch`.
  *
  * Example:
  *   import { Crawl4AI } from "crawl4ai-cloud";
@@ -117,8 +123,8 @@ export interface FindToolsOptions {
  */
 export interface Tools {
   /**
-   * Lists the tools, best match for `q` first (`GET /tools`). Free. Every word of `q` must be in the
-   * tool's id, name, site, summary or search words.
+   * Lists the tools, best match for `q` first (`GET /tools`). Free, and works without a key.
+   * Every word of `q` must be in the tool's id, name, site, summary or search words.
    *
    * Example:
    *   const { tools } = await new Crawl4AI().tools.find("amazon");
@@ -127,7 +133,7 @@ export interface Tools {
   find(q?: string, options?: FindToolsOptions): Promise<ToolList>;
   /**
    * One tool in full: its `inputs`, `output`, `cost`, `examples` and `input_schema` (`GET /tools/{id}`).
-   * Free. An unknown id throws NotFoundError; its `body.did_you_mean` lists the closest ids.
+   * Free, and works without a key. An unknown id throws NotFoundError; its `body.did_you_mean` lists the closest ids.
    *
    * Example:
    *   const tool = await new Crawl4AI().tools.get("amazon-product");
@@ -156,6 +162,20 @@ export interface Tools {
    *   console.log(run.data, run.usage);
    */
   run(toolId: string, inputs: Record<string, unknown>, options?: { fresh?: boolean }): Promise<ToolRun>;
+  /**
+   * Runs a tool on many inputs as one background job and returns at once (`POST /tools/batch`).
+   * The job is in `data`: wait for it with `waitScrapeJob` on `data.job_id`, then read it with
+   * `getScrapeJobResults`. A tool with no batch throws BadRequestError. Never sent twice after a
+   * 500 or a lost connection, so a job is never started twice.
+   *
+   * Example:
+   *   const client = new Crawl4AI();
+   *   const run = await client.tools.batch("scrape", [{ url: "https://example.com" }, { url: "https://example.org" }]);
+   *   const { job_id: jobId } = run.data as { job_id: string };
+   *   await client.waitScrapeJob(jobId);
+   *   for await (const item of client.getScrapeJobResults(jobId)) console.log(item.url, item.ok);
+   */
+  batch(toolId: string, inputs: Record<string, unknown>[]): Promise<ToolRun>;
 }
 
 /**
@@ -188,8 +208,9 @@ export class Crawl4AI {
         this.#json("GET", "/tools", {
           query: { q, ...options, essential: options.essential ? "true" : undefined },
           costs: false,
+          keyless: true,
         }),
-      get: async (toolId) => this.#json("GET", http.toolPath(toolId), { costs: false }),
+      get: async (toolId) => this.#json("GET", http.toolPath(toolId), { costs: false, keyless: true }),
       estimate: async (toolId, inputs) =>
         this.#json("POST", http.toolPath(toolId, "/estimate"), { json: inputs, costs: false }),
       run: async (toolId, inputs, options = {}) =>
@@ -198,6 +219,8 @@ export class Crawl4AI {
           headers: options.fresh ? { "Crawl4AI-Fresh": "true" } : {},
           safe: false,
         }),
+      batch: async (toolId, inputs) =>
+        this.#json("POST", "/tools/batch", { json: { tool: toolId, inputs }, safe: false }),
     };
   }
 
@@ -212,10 +235,12 @@ export class Crawl4AI {
    * 2. On 429 / 503 (and 500 / 504 when `safe`) wait `retryDelay` and send again,
    *    up to `maxRetries` times.
    * 3. Any other error answer throws the error `errorFrom` picks.
-   * The caller reads the body and then stops the timer.
+   * The caller reads the body and then stops the timer. Without a key only a `keyless` call is
+   * sent; any other throws AuthenticationError.
    */
   async #open(method: string, path: string, call: Call = {}): Promise<{ response: Response; timer: IdleTimer }> {
     const { query, json, safe = true } = call;
+    if (!call.keyless) http.requireKey(this.#headers);
     const url = this.#baseUrl + path + http.query(query ?? {});
     const headers = { ...this.#headers, ...(json ? { "Content-Type": "application/json" } : {}), ...call.headers };
     for (let attempt = 0; ; attempt++) {

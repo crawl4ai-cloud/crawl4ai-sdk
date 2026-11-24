@@ -39,10 +39,11 @@ The package is an ES module. From CommonJS, `require("crawl4ai-cloud")` works on
 | `serp(q)` | Google's results page as data (beta) |
 | `answer(q)` | A direct answer with sources (experimental) |
 | `extract(url, { instruction })` | Structured JSON from a page |
-| `tools.find(q)` | The Toolkit catalog: every tool, best match first (free) |
-| `tools.get(toolId)` | One tool's inputs, output, cost and examples (free) |
+| `tools.find(q)` | The Toolkit catalog: every tool, best match first (free, no key needed) |
+| `tools.get(toolId)` | One tool's inputs, output, cost and examples (free, no key needed) |
 | `tools.estimate(toolId, inputs)` | What a run would cost (free) |
 | `tools.run(toolId, inputs)` | Runs any tool, the same way for all |
+| `tools.batch(toolId, inputs)` | Runs a tool on many inputs as one background job |
 
 Every method has a doc comment with an example; your editor shows it.
 

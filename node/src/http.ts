@@ -34,15 +34,22 @@ const ERROR_BY_STATUS: Record<number, typeof Crawl4AIError> = {
 
 /**
  * Returns the headers of every request. The key is `apiKey`, else the first env var of
- * `KEY_ENV_VARS` that is set; with neither it throws AuthenticationError. A key with a character a
- * header cannot carry throws too, without the key: fetch's own error would quote it whole.
+ * `KEY_ENV_VARS` that is set. With neither there is no Authorization header: the free catalog
+ * calls still work and every other call throws (see `requireKey`). A key with a character a
+ * header cannot carry throws, without the key: fetch's own error would quote it whole.
  */
 export function headers(apiKey?: string): Record<string, string> {
   const env = globalThis.process?.env ?? {};
   const key = (apiKey || KEY_ENV_VARS.map((name) => env[name]).find(Boolean))?.trim();
-  if (!key) throw new AuthenticationError("No API key: pass { apiKey } or set CRAWL4AI_API_KEY.");
+  const userAgent = { "User-Agent": `crawl4ai-cloud-node/${VERSION}` };
+  if (!key) return userAgent;
   if (!/^[\x21-\x7e]+$/.test(key)) throw new AuthenticationError("The API key has a character that is not allowed.");
-  return { Authorization: `Bearer ${key}`, "User-Agent": `crawl4ai-cloud-node/${VERSION}` };
+  return { Authorization: `Bearer ${key}`, ...userAgent };
+}
+
+/** Throws AuthenticationError, before anything is sent, when the client has no key. */
+export function requireKey(headers: Record<string, string>): void {
+  if (!headers.Authorization) throw new AuthenticationError("No API key: pass { apiKey } or set CRAWL4AI_API_KEY.");
 }
 
 /**
