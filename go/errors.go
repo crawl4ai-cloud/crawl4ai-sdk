@@ -34,8 +34,9 @@ var errorKinds = map[int]error{
 //
 // Kind is one of the Err values above (nil for a status without one), Status the HTTP status (0
 // when no answer came back), Code the server's short code (`no_credit`, `blocked`, ...), Message
-// text you can show to people as it is, and Actions the server's links that fix the problem (for
-// example `subscribe`). Err is the cause, for example context.Canceled.
+// text you can show to people as it is, Actions the server's links that fix the problem (for
+// example `subscribe`), and Body the whole error answer (Body["did_you_mean"] lists the closest
+// tool ids on a 404 `tool_not_found`). Err is the cause, for example context.Canceled.
 //
 //	var e *crawl4ai.Error
 //	if errors.As(err, &e) { fmt.Println(e.Status, e.Code, e.Message) }
@@ -45,6 +46,7 @@ type Error struct {
 	Code    string
 	Message string
 	Actions map[string]any
+	Body    map[string]any
 	Err     error
 }
 

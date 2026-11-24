@@ -56,12 +56,16 @@ type Client struct {
 	timeout    time.Duration
 	maxRetries int
 	http       *http.Client
+
+	// Tools is the Toolkit: every Crawl4AI tool, called the same way. See Tools.
+	Tools *Tools
 }
 
 // Option changes one setting of NewClient.
 type Option func(*Client)
 
-// WithAPIKey sets the key; without it the key is read from CRAWL4AI_API_KEY.
+// WithAPIKey sets the key; without it the key is read from CRAWL4AI_API_KEY. Without either, only
+// Tools.Find and Tools.Get work; every other call returns an ErrAuthentication error.
 func WithAPIKey(key string) Option { return func(c *Client) { c.key = key } }
 
 // WithBaseURL sets the API address.
@@ -89,8 +93,8 @@ var defaultHTTP = &http.Client{CheckRedirect: func(req *http.Request, via []*htt
 	return nil
 }}
 
-// NewClient returns a client. With no key, and a key with a character a header cannot carry, it
-// returns an ErrAuthentication error (without the key).
+// NewClient returns a client. A key with a character a header cannot carry is an ErrAuthentication
+// error (without the key). With no key the client is made, but only Tools.Find and Tools.Get work.
 //
 //	client, err := crawl4ai.NewClient(crawl4ai.WithTimeout(60 * time.Second))
 func NewClient(opts ...Option) (*Client, error) {
@@ -104,15 +108,13 @@ func NewClient(opts ...Option) (*Client, error) {
 		}
 	}
 	c.key = strings.TrimSpace(c.key)
-	if c.key == "" {
-		return nil, &Error{Kind: ErrAuthentication, Message: "No API key: pass WithAPIKey or set CRAWL4AI_API_KEY."}
-	}
 	for _, r := range c.key {
 		if r < 0x21 || r > 0x7e {
 			return nil, &Error{Kind: ErrAuthentication, Message: "The API key has a character that is not allowed."}
 		}
 	}
 	c.baseURL = strings.TrimRight(c.baseURL, "/")
+	c.Tools = &Tools{c: c}
 	return c, nil
 }
 
@@ -122,14 +124,17 @@ func (c Client) String() string { return "crawl4ai.Client{" + c.baseURL + "}" }
 // GoString is String for %#v.
 func (c Client) GoString() string { return c.String() }
 
-// call is one request: its path, query and JSON body. once marks a call that must never run twice:
-// it is not retried after a 500 or a lost connection.
+// call is one request: its path, query, JSON body and extra headers. once marks a call that must
+// never run twice: it is not retried after a 500 or a lost connection. keyless marks a free call
+// that is sent even when the client has no key.
 type call struct {
-	method string
-	path   string
-	query  url.Values
-	body   any
-	once   bool
+	method  string
+	path    string
+	query   url.Values
+	body    any
+	header  http.Header
+	once    bool
+	keyless bool
 }
 
 // idleTimer cancels a request after d with no progress. touch starts the count again, stop ends it.
@@ -178,11 +183,15 @@ var sleep = func(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// shouldRetry reports whether a request that got `status` is worth sending again.
-// 429 and 503 mean the server did not start the work, so every request retries them.
+// shouldRetry reports whether a request that got `e` is worth sending again.
+// 429 and 503 mean the server did not start the work, so every request retries them, except a
+// 503 `tool_failing`: the tool's daily check is failing, so the same call fails again.
 // 500 and 504 retry only when `safe` (sending the request twice cannot run the work twice).
-func shouldRetry(status int, safe bool) bool {
-	return status == 429 || status == 503 || (safe && (status == 500 || status == 504))
+func shouldRetry(e *Error, safe bool) bool {
+	if e.Code == "tool_failing" {
+		return false
+	}
+	return e.Status == 429 || e.Status == 503 || (safe && (e.Status == 500 || e.Status == 504))
 }
 
 // retryDelay is the wait before retry number `attempt` (0 = the first retry): the server's
@@ -199,7 +208,8 @@ func retryDelay(attempt int, retryAfter string) time.Duration {
 // errorFrom builds the error for an error answer from its status and body.
 //
 // The server sends {"error": code, "message": ..., "actions": ...}, /scrape sends
-// {"ok": false, "reason": code}, and some errors send plain text or nothing.
+// {"ok": false, "reason": code}, /tools adds `details` or `did_you_mean`, and some errors send
+// plain text or nothing.
 func errorFrom(status int, text []byte) *Error {
 	var body map[string]any
 	_ = json.Unmarshal(text, &body) // plain text or empty: the message falls back to the text
@@ -212,6 +222,18 @@ func errorFrom(status int, text []byte) *Error {
 	message, _ := body["message"].(string)
 	if message == "" {
 		message = code
+		// /tools says what is wrong in `details`: [{"input": "url", "problem": "url is required"}]
+		details, _ := body["details"].([]any)
+		var problems []string
+		for _, d := range details {
+			entry, _ := d.(map[string]any)
+			if p, _ := entry["problem"].(string); p != "" {
+				problems = append(problems, p)
+			}
+		}
+		if code != "" && len(problems) > 0 {
+			message = code + ": " + strings.Join(problems, "; ")
+		}
 	}
 	if message == "" {
 		runes := []rune(strings.TrimSpace(string(text)))
@@ -225,7 +247,7 @@ func errorFrom(status int, text []byte) *Error {
 		kind = ErrServer
 	}
 	actions, _ := body["actions"].(map[string]any)
-	return &Error{Kind: kind, Status: status, Code: code, Message: message, Actions: actions}
+	return &Error{Kind: kind, Status: status, Code: code, Message: message, Actions: actions, Body: body}
 }
 
 // failed turns a failure to send or read into an *Error: no answer in time (our timeout or the
@@ -271,7 +293,12 @@ func decode(path string, text []byte, v any) error {
 //  2. On 429 / 503 (and 500 / 504 when not `once`) wait retryDelay and send again, up to
 //     maxRetries times.
 //  3. Any other error answer returns the error errorFrom builds.
+//
+// Without a key only a `keyless` call is sent; any other returns an ErrAuthentication error.
 func (c *Client) open(ctx context.Context, k call) (*http.Response, *idleTimer, context.CancelFunc, error) {
+	if c.key == "" && !k.keyless {
+		return nil, nil, nil, &Error{Kind: ErrAuthentication, Message: "No API key: pass WithAPIKey or set CRAWL4AI_API_KEY."}
+	}
 	target := c.baseURL + k.path
 	if len(k.query) > 0 {
 		target += "?" + k.query.Encode()
@@ -293,7 +320,12 @@ func (c *Client) open(ctx context.Context, k call) (*http.Response, *idleTimer, 
 			cancel()
 			return nil, nil, nil, &Error{Message: k.path + ": " + err.Error(), Err: err}
 		}
-		req.Header.Set("Authorization", "Bearer "+c.key)
+		for name, values := range k.header {
+			req.Header[name] = values
+		}
+		if c.key != "" {
+			req.Header.Set("Authorization", "Bearer "+c.key)
+		}
 		req.Header.Set("User-Agent", "crawl4ai-cloud-go/"+Version)
 		if payload != nil {
 			req.Header.Set("Content-Type", "application/json")
@@ -321,9 +353,10 @@ func (c *Client) open(ctx context.Context, k call) (*http.Response, *idleTimer, 
 		if err != nil && (it.expired.Load() || ctx.Err() != nil) {
 			return nil, nil, nil, failed(ctx, it, k.path, err)
 		}
-		if last || !shouldRetry(resp.StatusCode, !k.once) {
+		e := errorFrom(resp.StatusCode, text)
+		if last || !shouldRetry(e, !k.once) {
 			// ---- 3. Return the error ----
-			return nil, nil, nil, errorFrom(resp.StatusCode, text)
+			return nil, nil, nil, e
 		}
 		if err := sleep(ctx, retryDelay(attempt, resp.Header.Get("Retry-After"))); err != nil {
 			return nil, nil, nil, stopped(ctx, k.path)
@@ -410,6 +443,15 @@ func jobPath(jobID, tail string) (string, error) {
 		return "", &Error{Kind: ErrBadRequest, Message: fmt.Sprintf("Not a job id: %q", jobID)}
 	}
 	return "/scrape/jobs/" + url.PathEscape(jobID) + tail, nil
+}
+
+// toolPath returns /tools/<toolID><tail>, with the id escaped for a URL. An empty id, `.` or `..`
+// (which a URL reads as a folder step) is an ErrBadRequest.
+func toolPath(toolID, tail string) (string, error) {
+	if toolID == "" || toolID == "." || toolID == ".." {
+		return "", &Error{Kind: ErrBadRequest, Message: fmt.Sprintf("Not a tool id: %q", toolID)}
+	}
+	return "/tools/" + url.PathEscape(toolID) + tail, nil
 }
 
 // flag is the 0 or 1 the API takes for a yes/no query field.
