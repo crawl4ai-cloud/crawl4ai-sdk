@@ -1159,12 +1159,10 @@ components:
           type: integer
           description: Units this call was billed.
 
-    Tool:
+    ToolSummary:
       type: object
       required: [id]
-      description: |
-        `GET /tools` gives the summary fields; `GET /tools/{id}` adds `description`, `inputs`,
-        `output`, `examples` and `input_schema`, and gives `cost` as an object.
+      description: One tool in the list `GET /tools` returns. `GET /tools/{id}` gives it in full.
       properties:
         id: { type: string, examples: [amazon-product] }
         name:
@@ -1174,8 +1172,36 @@ components:
         source: { type: string, description: "The site, for example `amazon`." }
         kind: { $ref: "#/components/schemas/OpenString" }
         summary: { type: string }
+        cost: { type: string, description: "The price in words, for example `1 cr`." }
+        typical: { type: string, description: "A typical run time, for example `3.1 s`." }
+        status: { $ref: "#/components/schemas/OpenString" }
+        essential: { type: boolean, description: Works on any website. }
+        beta: { type: boolean }
+        inputs:
+          type: array
+          description: "The input names; a name ending in `*` is required, for example `product*`."
+          items: { type: string }
+
+    Tool:
+      type: object
+      required: [id]
+      description: One tool in full, from `GET /tools/{id}`.
+      properties:
+        id: { type: string, examples: [amazon-product] }
+        name:
+          type: object
+          description: "The name in two parts, for example `{\"lead\": \"Amazon\", \"rest\": \"product\"}`."
+          properties:
+            lead: { type: string }
+            rest: { type: string }
+        source: { type: string, description: "The site, for example `amazon`." }
+        kind: { $ref: "#/components/schemas/OpenString" }
+        summary: { type: string }
         cost:
-          description: Text like `1 cr` in the list; an object with `text` and `rule` in `GET /tools/{id}`.
+          type: object
+          properties:
+            text: { type: string, description: "The price in words, for example `1 cr`." }
+            rule: { type: string, description: How the price is set. }
         typical: { type: string, description: "A typical run time, for example `3.1 s`." }
         status: { $ref: "#/components/schemas/OpenString" }
         essential: { type: boolean, description: Works on any website. }
@@ -1214,7 +1240,7 @@ components:
       properties:
         tools:
           type: array
-          items: { $ref: "#/components/schemas/Tool" }
+          items: { $ref: "#/components/schemas/ToolSummary" }
         total: { type: integer, description: Tools that match. }
         next_cursor:
           type: [string, "null"]
@@ -1225,16 +1251,21 @@ components:
 
     ToolEstimate:
       type: object
-      description: |
-        `text` says the price in words and `rule` how it is set. Some tools (`scrape`) answer
-        in the run shape instead, with their estimate in `data`.
+      description: The run shape, with the estimate under `data`.
       properties:
         tool: { type: string }
-        text: { type: string, examples: ["1 cr"] }
-        rule: { type: string }
+        request_id: { type: string }
+        took_ms: { type: integer }
         data:
           type: object
-          description: A tool's own estimate, for example `text`, `min` and `max`.
+          description: |
+            `text` says the price in words (`1 cr`, `about 0.05 credits`). A tool priced by what the
+            run returns gives its `rule`; a tool priced by its inputs gives `min` and `max`.
+          properties:
+            text: { type: string, examples: ["1 cr"] }
+            rule: { type: string }
+            min: { type: string }
+            max: { type: string }
 
     ToolRun:
       type: object

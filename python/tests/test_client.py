@@ -339,10 +339,10 @@ def test_tools_find_sends_the_filters_and_reads_the_page():
 def test_tools_get_and_estimate_read_the_tool():
     client, requests = fake(
         httpx.Response(200, json={"id": "scrape", "inputs": [{"name": "url", "required": True}], "input_schema": {}}),
-        httpx.Response(200, json={"tool": "amazon-product", "text": "1 cr", "rule": "1 credit a run"}),
+        httpx.Response(200, json={"tool": "amazon-product", "data": {"text": "1 cr", "rule": "1 credit a run"}}),
     )
     assert client.tools.get("scrape").inputs[0]["name"] == "url"
-    assert client.tools.estimate("amazon-product", {"product": "B0"}).text == "1 cr"
+    assert client.tools.estimate("amazon-product", {"product": "B0"}).data == {"text": "1 cr", "rule": "1 credit a run"}
     assert requests[1].method == "POST" and requests[1].url.path == "/tools/amazon-product/estimate"
     assert json.loads(requests[1].content) == {"product": "B0"}
 

@@ -8,7 +8,7 @@ with Crawl4AI() as client:
 
     tool = client.tools.get("amazon-product")
     print("inputs:", [i["name"] for i in tool.inputs or []])
-    print("price:", client.tools.estimate("amazon-product", {"product": "B0F5HSNDXF"}).text)
+    print("price:", client.tools.estimate("amazon-product", {"product": "B0F5HSNDXF"}).data["text"])
 
     run = client.tools.run("amazon-product", {"product": "B0F5HSNDXF"})
     for row in run.rows or []:

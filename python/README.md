@@ -82,7 +82,7 @@ tool exists for each supported site (`amazon-product`, `linkedin-company`, `yout
 ```python
 tool = client.tools.find("amazon product").tools[0]     # free
 print([i["name"] for i in client.tools.get(tool.id).inputs])
-print(client.tools.estimate(tool.id, {"product": "B0F5HSNDXF"}).text)
+print(client.tools.estimate(tool.id, {"product": "B0F5HSNDXF"}).data["text"])
 
 run = client.tools.run(tool.id, {"product": "B0F5HSNDXF"})
 print(run.rows, run.usage)  # a tool that returns rows puts them in rows; the rest is in run.data

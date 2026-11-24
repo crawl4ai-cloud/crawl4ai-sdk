@@ -144,7 +144,7 @@ export interface Tools {
    * What a run with these `inputs` would cost, before it runs (`POST /tools/{id}/estimate`). Free.
    *
    * Example:
-   *   console.log((await new Crawl4AI().tools.estimate("amazon-product", { product: "B0F5HSNDXF" })).text);
+   *   console.log((await new Crawl4AI().tools.estimate("amazon-product", { product: "B0F5HSNDXF" })).data?.text);
    */
   estimate(toolId: string, inputs: Record<string, unknown>): Promise<ToolEstimate>;
   /**

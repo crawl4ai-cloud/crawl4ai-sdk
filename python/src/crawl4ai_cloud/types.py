@@ -259,19 +259,38 @@ class ExtractResult(Response):
 
 
 @dataclass(kw_only=True, slots=True)
-class Tool(Model):
-    """One tool of the Toolkit. `find` fills the summary fields: `id`, `name` (`[lead word, rest]`),
-    `source` (the site), `kind`, `summary`, `cost` (text like `1 cr`), `typical` (a typical run time),
-    `status` (`verified`, `beta` or `failing`), `essential` and `beta`. `get` adds `description`,
-    `inputs` (each with `name`, `type`, `required`, `help`, `example`), `output` (`output["fields"]`),
-    `examples` and `input_schema` (a JSON Schema of the inputs), and gives `cost` as an object."""
+class ToolSummary(Model):
+    """One tool in the list `tools.find` returns: `id`, `name` (`[lead word, rest]`), `source` (the
+    site), `kind`, `summary`, `cost` (text like `1 cr`), `typical` (a typical run time), `status`
+    (`verified`, `beta` or `failing`), `essential`, `beta` and `inputs` (the input names; a name
+    ending in `*` is required). `tools.get` gives the tool in full."""
 
     id: str | None = None
     name: list[str] | None = None
     source: str | None = None
     kind: str | None = None
     summary: str | None = None
-    cost: Any = None
+    cost: str | None = None
+    typical: str | None = None
+    status: str | None = None
+    essential: bool | None = None
+    beta: bool | None = None
+    inputs: list[str] | None = None
+
+
+@dataclass(kw_only=True, slots=True)
+class Tool(Model):
+    """One tool in full, from `tools.get`: the fields of `ToolSummary`, except that `name` is
+    `{"lead": ..., "rest": ...}`, `cost` is `{"text": ..., "rule": ...}` and each of `inputs` has
+    `name`, `type`, `required`, `help` and `example`; plus `description`, `output`
+    (`output["fields"]`), `examples` and `input_schema` (a JSON Schema of the inputs)."""
+
+    id: str | None = None
+    name: dict[str, str] | None = None
+    source: str | None = None
+    kind: str | None = None
+    summary: str | None = None
+    cost: dict[str, Any] | None = None
     typical: str | None = None
     status: str | None = None
     essential: bool | None = None
@@ -288,23 +307,23 @@ class ToolList(Model):
     """The answer to `tools.find`: the `tools` on this page, best match first, the `total` that
     match, and `next_cursor` for the next page (None on the last page)."""
 
-    tools: list[Tool] | None = None
+    tools: list[ToolSummary] | None = None
     total: int | None = None
     next_cursor: str | None = None
     counts: dict[str, Any] | None = None
 
-    _nested: ClassVar[dict[str, type[Model]]] = {"tools": Tool}
+    _nested: ClassVar[dict[str, type[Model]]] = {"tools": ToolSummary}
 
 
 @dataclass(kw_only=True, slots=True)
 class ToolEstimate(Model):
-    """The answer to `tools.estimate`: `text` says the price in words (`1 cr`) and `rule` how it is
-    set. Some tools give their own estimate in `data` instead (`data["text"]`, `data["min"]`, `data["max"]`)."""
+    """The answer to `tools.estimate`, with the estimate in `data`: `data["text"]` says the price in
+    words (`1 cr`). A tool priced by what the run returns gives `data["rule"]`; a tool priced by its
+    inputs gives `data["min"]` and `data["max"]`."""
 
     tool: str | None = None
-    text: str | None = None
-    rule: str | None = None
-    data: Any = None
+    request_id: str | None = None
+    data: dict[str, Any] | None = None
 
 
 @dataclass(kw_only=True, slots=True)

@@ -184,18 +184,37 @@ export interface ExtractResult extends Costs {
 }
 
 /**
- * One tool of the Toolkit. `find` fills the summary fields: `id`, `name` (`[lead word, rest]`),
- * `source` (the site), `kind`, `summary`, `cost` (text like `1 cr`), `typical` (a typical run time),
- * `status`, `essential` and `beta`. `get` adds `description`, `inputs`, `output` (`output.fields`),
- * `examples` and `input_schema` (a JSON Schema of the inputs), and gives `cost` as an object.
+ * One tool in the list `tools.find` returns: `id`, `name` (`[lead word, rest]`), `source` (the site),
+ * `kind`, `summary`, `cost` (text like `1 cr`), `typical` (a typical run time), `status`,
+ * `essential`, `beta` and `inputs`. `tools.get` gives the tool in full.
  */
-export interface Tool {
+export interface ToolSummary {
   id: string;
   name?: string[];
   source?: string;
   kind?: string;
   summary?: string;
-  cost?: unknown;
+  cost?: string;
+  typical?: string;
+  status?: "verified" | "beta" | "failing" | (string & {});
+  essential?: boolean;
+  beta?: boolean;
+  /** The input names; a name ending in `*` is required. */
+  inputs?: string[];
+}
+
+/**
+ * One tool in full, from `tools.get`: the fields of `ToolSummary`, except that `name` is
+ * `{ lead, rest }`, `cost` is `{ text, rule }` and each of `inputs` is an object; plus
+ * `description`, `output`, `examples` and `input_schema` (a JSON Schema of the inputs).
+ */
+export interface Tool {
+  id: string;
+  name?: { lead?: string; rest?: string };
+  source?: string;
+  kind?: string;
+  summary?: string;
+  cost?: { text?: string; rule?: string } & Record<string, unknown>;
   typical?: string;
   status?: "verified" | "beta" | "failing" | (string & {});
   essential?: boolean;
@@ -209,21 +228,21 @@ export interface Tool {
 
 /** The answer to `tools.find`: the `tools` on this page, the `total` that match, and `next_cursor` for the next page. */
 export interface ToolList {
-  tools: Tool[];
+  tools: ToolSummary[];
   total?: number;
   next_cursor?: string | null;
   counts?: Record<string, unknown>;
 }
 
 /**
- * The answer to `tools.estimate`: `text` says the price in words (`1 cr`) and `rule` how it is set.
- * Some tools give their own estimate in `data` instead (`data.text`, `data.min`, `data.max`).
+ * The answer to `tools.estimate`, with the estimate in `data`: `data.text` says the price in words
+ * (`1 cr`). A tool priced by what the run returns gives `data.rule`; a tool priced by its inputs
+ * gives `data.min` and `data.max`.
  */
 export interface ToolEstimate {
   tool?: string;
-  text?: string;
-  rule?: string;
-  data?: Record<string, unknown>;
+  request_id?: string;
+  data?: { text?: string; rule?: string; min?: string; max?: string } & Record<string, unknown>;
 }
 
 /**

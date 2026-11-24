@@ -787,7 +787,7 @@ class Tools:
         Example:
             from crawl4ai_cloud import Crawl4AI
 
-            print(Crawl4AI().tools.estimate("amazon-product", {"product": "B0F5HSNDXF"}).text)
+            print(Crawl4AI().tools.estimate("amazon-product", {"product": "B0F5HSNDXF"}).data["text"])
         """
         path = _http.tool_path(tool_id, "/estimate")
         return ToolEstimate.from_dict(_http.parse(self._client._open("POST", path, json=inputs).content, path))

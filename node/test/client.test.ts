@@ -416,12 +416,12 @@ test("tools.find sends the filters and reads the page", async () => {
 test("tools.get and tools.estimate read the tool", async () => {
   const { client, sent } = fake(
     json({ id: "scrape", inputs: [{ name: "url", required: true }], cost: { text: "0.05 to 2 cr" } }),
-    json({ tool: "amazon-product", text: "1 cr" }),
+    json({ tool: "amazon-product", data: { text: "1 cr" } }),
   );
   const tool = await client.tools.get("scrape");
   assert.equal(tool.inputs?.[0]?.name, "url");
   assert.deepEqual(tool.cost, { text: "0.05 to 2 cr" }); // the tool's price, not the call's cost header
-  assert.equal((await client.tools.estimate("amazon-product", { product: "B0" })).text, "1 cr");
+  assert.equal((await client.tools.estimate("amazon-product", { product: "B0" })).data?.text, "1 cr");
   assert.equal(sent[1]!.method, "POST");
   assert.equal(sent[1]!.url.pathname, "/tools/amazon-product/estimate");
   assert.deepEqual(sent[1]!.json, { product: "B0" });

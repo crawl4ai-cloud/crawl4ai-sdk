@@ -71,7 +71,7 @@ tool exists for each supported site (`amazon-product`, `linkedin-company`, `yout
 ```ts
 const [tool] = (await client.tools.find("amazon product")).tools; // free
 console.log((await client.tools.get(tool.id)).inputs?.map((input) => input.name));
-console.log((await client.tools.estimate(tool.id, { product: "B0F5HSNDXF" })).text);
+console.log((await client.tools.estimate(tool.id, { product: "B0F5HSNDXF" })).data?.text);
 
 const run = await client.tools.run(tool.id, { product: "B0F5HSNDXF" });
 console.log(run.rows, run.usage); // a tool that returns rows puts them in rows; the rest is in run.data
