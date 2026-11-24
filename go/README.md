@@ -41,6 +41,11 @@ Every method takes a `context.Context` first, and its options as a pointer you m
 | `Serp(ctx, q, opts)` | Google's results page as data (beta) |
 | `Answer(ctx, q, opts)` | A direct answer with sources (experimental) |
 | `Extract(ctx, opts)` | Structured JSON from a page or your own text |
+| `Tools.Find(ctx, q, opts)` | The Toolkit catalog: every tool, best match first (free, no key needed) |
+| `Tools.Get(ctx, toolID)` | One tool's inputs, output, cost and examples (free, no key needed) |
+| `Tools.Estimate(ctx, toolID, inputs)` | What a run would cost (free) |
+| `Tools.Run(ctx, toolID, inputs, opts)` | Runs any tool, the same way for all |
+| `Tools.Batch(ctx, toolID, inputs)` | Runs a tool on many inputs as one background job |
 
 Every method has a doc comment with an example (`go doc crawl4ai.Client.Scrape`).
 
@@ -89,6 +94,26 @@ ext, err := client.Extract(ctx, &crawl4ai.ExtractOptions{URL: "https://news.ycom
 // ext.Data is JSON: unmarshal it into your own type
 ```
 
+### Toolkit: every tool, one way
+
+Every kind of data is a tool: `scrape`, `search` and `extract` work on any website, and a ready
+tool exists for each supported site (`amazon-product`, `linkedin-company`, `youtube-captions`, ...).
+
+```go
+list, err := client.Tools.Find(ctx, "amazon product", nil) // free
+tool, err := client.Tools.Get(ctx, list.Tools[0].ID)       // tool.Inputs: what it takes
+est, err := client.Tools.Estimate(ctx, tool.ID, map[string]any{"product": "B0F5HSNDXF"})
+
+run, err := client.Tools.Run(ctx, tool.ID, map[string]any{"product": "B0F5HSNDXF"}, nil)
+// a tool that returns rows puts them in run.Rows; the rest is in run.Data, as JSON
+```
+
+`&crawl4ai.RunToolOptions{Fresh: true}` skips the cache, at the live price. A failed run is not
+charged, and a run is never sent twice after a 500 or a lost connection. An unknown id is an
+`ErrNotFound` error with the closest ids in `e.Body["did_you_mean"]`; wrong inputs are an
+`ErrBadRequest` error naming the problem. `Batch` returns the job in `run.Data`: unmarshal it into
+a `crawl4ai.ScrapeJob`, then use `WaitScrapeJob` and `GetScrapeJobResults`.
+
 ## Results
 
 Every result is a struct with the API's own field names in its JSON tags (`JobID` is `job_id`,
@@ -107,7 +132,7 @@ Every error is a `*crawl4ai.Error` with `Status`, `Code`, `Message` (show it to 
 | `ErrAuthentication` | 401: no key, or a key that is not valid |
 | `ErrPaymentRequired` | 402: out of credit (`Code`: `no_credit`, `plan_cap`, `spend_cap`, `plan_needed`) |
 | `ErrBlocked` | 403: the site refused every attempt (`Code`: `blocked`, `login-wall`) |
-| `ErrNotFound` | 404: no such job, or not open to your account |
+| `ErrNotFound` | 404: no such job or tool, or not open to your account |
 | `ErrRateLimit` | 429: over your plan's pace, after every retry |
 | `ErrServer` | 5xx: the service or the site failed (`Code`: `busy`, `no-answer`, ...) |
 | `ErrConnection`, `ErrTimeout` | No answer came back (a timeout is also an `ErrConnection`) |

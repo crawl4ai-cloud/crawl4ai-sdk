@@ -265,3 +265,104 @@ type ExtractResult struct {
 	Usage map[string]any  `json:"usage,omitempty"`
 	Ms    int             `json:"ms,omitempty"`
 }
+
+// ToolSummary is one tool in the list Tools.Find returns: ID, Name ([lead word, rest]), Source
+// (the site), Kind, Summary, Cost (the price in words, `1 cr`), Typical (a typical run time), Status
+// (`verified`, `beta` or `failing`), Essential, Beta and Inputs (the input names; a name ending in
+// `*` is required). Tools.Get gives the tool in full.
+type ToolSummary struct {
+	ID        string   `json:"id"`
+	Name      []string `json:"name,omitempty"`
+	Source    string   `json:"source,omitempty"`
+	Kind      string   `json:"kind,omitempty"`
+	Summary   string   `json:"summary,omitempty"`
+	Cost      string   `json:"cost,omitempty"`
+	Typical   string   `json:"typical,omitempty"`
+	Status    string   `json:"status,omitempty"`
+	Essential bool     `json:"essential,omitempty"`
+	Beta      bool     `json:"beta,omitempty"`
+	Inputs    []string `json:"inputs,omitempty"`
+}
+
+// Tool is one tool in full, from Tools.Get: the fields of ToolSummary, with Name in two parts, Cost
+// with its rule and each of Inputs in full; plus Description, Output (Output["fields"]), Examples and
+// InputSchema (a JSON Schema of the inputs). Cost is the tool's price, not what the call cost (the
+// call is free; that is Meta.Cost).
+type Tool struct {
+	Meta
+	ID          string          `json:"id"`
+	Name        ToolName        `json:"name"`
+	Source      string          `json:"source,omitempty"`
+	Kind        string          `json:"kind,omitempty"`
+	Summary     string          `json:"summary,omitempty"`
+	Cost        ToolCost        `json:"cost"`
+	Typical     string          `json:"typical,omitempty"`
+	Status      string          `json:"status,omitempty"`
+	Essential   bool            `json:"essential,omitempty"`
+	Beta        bool            `json:"beta,omitempty"`
+	Description string          `json:"description,omitempty"`
+	Inputs      []ToolInput     `json:"inputs,omitempty"`
+	Output      map[string]any  `json:"output,omitempty"`
+	Examples    []ToolExample   `json:"examples,omitempty"`
+	InputSchema json.RawMessage `json:"input_schema,omitempty"`
+}
+
+// ToolName is a tool's name in two parts, for example Lead `Amazon` and Rest `product`.
+type ToolName struct {
+	Lead string `json:"lead,omitempty"`
+	Rest string `json:"rest,omitempty"`
+}
+
+// ToolCost is a tool's price: Text in words (`1 cr`) and the Rule that sets it.
+type ToolCost struct {
+	Text string `json:"text,omitempty"`
+	Rule string `json:"rule,omitempty"`
+}
+
+// ToolInput is one input a tool takes.
+type ToolInput struct {
+	Name     string `json:"name"`
+	Type     string `json:"type,omitempty"`
+	Required bool   `json:"required,omitempty"`
+	Help     string `json:"help,omitempty"`
+	Example  any    `json:"example,omitempty"`
+}
+
+// ToolExample is a sample run of a tool: a Label and the Input it takes.
+type ToolExample struct {
+	Label string         `json:"label,omitempty"`
+	Input map[string]any `json:"input,omitempty"`
+}
+
+// ToolList is the answer to Tools.Find: the Tools on this page, best match first, the Total that
+// match, and NextCursor for the next page (empty on the last page).
+type ToolList struct {
+	Meta
+	Tools      []ToolSummary  `json:"tools"`
+	Total      int            `json:"total,omitempty"`
+	NextCursor string         `json:"next_cursor,omitempty"`
+	Counts     map[string]any `json:"counts,omitempty"`
+}
+
+// ToolEstimate is the answer to Tools.Estimate, with the estimate in Data: Data["text"] says the
+// price in words (`1 cr`). A tool priced by what the run returns gives Data["rule"]; a tool priced
+// by its inputs gives Data["min"] and Data["max"].
+type ToolEstimate struct {
+	Meta
+	Tool      string         `json:"tool,omitempty"`
+	RequestID string         `json:"request_id,omitempty"`
+	Data      map[string]any `json:"data,omitempty"`
+}
+
+// ToolRun is the answer to Tools.Run and Tools.Batch, the same shape for every tool: the Rows it
+// found (a tool that returns rows), the rest of its answer in Data (unmarshal it into your own type),
+// Usage["credits"], TookMs and the RequestID to quote when you report a problem.
+type ToolRun struct {
+	Meta
+	Tool      string           `json:"tool"`
+	RequestID string           `json:"request_id,omitempty"`
+	TookMs    int              `json:"took_ms,omitempty"`
+	Usage     map[string]any   `json:"usage,omitempty"`
+	Rows      []map[string]any `json:"rows,omitempty"`
+	Data      json.RawMessage  `json:"data,omitempty"`
+}

@@ -123,12 +123,19 @@ var ctx = context.Background()
 func TestKeyFromEnvAndMissing(t *testing.T) {
 	t.Setenv("CRAWL4AI_API_KEY", "")
 	t.Setenv("CRAWL4AI_KEY", "")
-	_, err := NewClient()
-	isKind(t, err, ErrAuthentication)
-
 	s := fake(t, answerJSON(200, page))
+	c, err := NewClient(WithBaseURL(s.url))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.Scrape(ctx, "https://example.com", nil)
+	isKind(t, err, ErrAuthentication)
+	if len(s.got()) != 0 {
+		t.Fatal("a call without a key was sent")
+	}
+
 	t.Setenv("CRAWL4AI_KEY", "sk_old_name")
-	c, _ := NewClient(WithBaseURL(s.url))
+	c, _ = NewClient(WithBaseURL(s.url))
 	_, _ = c.Scrape(ctx, "https://example.com", nil)
 	t.Setenv("CRAWL4AI_API_KEY", "sk_new_name")
 	c, _ = NewClient(WithBaseURL(s.url))

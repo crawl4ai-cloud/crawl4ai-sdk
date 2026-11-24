@@ -11,7 +11,7 @@ One folder per task (scrape a page, extract JSON, search, batch), each with the 
 | `answer` | A direct answer with sources, plain or in a JSON Schema's shape |
 | `extract` | Structured JSON from a page or from your own text |
 | `errors` | Catching each kind of error |
-| `tools` | The Toolkit: find a tool, read its inputs, price a run, run it (Python and Node) |
+| `tools` | The Toolkit: find a tool, read its inputs, price a run, run it |
 
 Run one with your key in the environment. Each run spends a few credits.
 
