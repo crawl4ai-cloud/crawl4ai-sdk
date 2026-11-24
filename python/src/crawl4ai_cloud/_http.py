@@ -7,6 +7,8 @@ import json
 import os
 import random
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 from urllib.parse import quote
 
@@ -14,6 +16,8 @@ import httpx
 
 from ._version import __version__
 from .errors import (
+    APIConnectionError,
+    APITimeoutError,
     AuthenticationError,
     BadRequestError,
     BlockedError,
@@ -44,23 +48,34 @@ _ERROR_BY_STATUS: dict[int, type[Crawl4AIError]] = {
 
 def headers(api_key: str | None) -> dict[str, str]:
     """Returns the headers of every request. The key is `api_key`, else the first env var of
-    `_KEY_ENV_VARS` that is set; with neither it raises AuthenticationError. A key with a character
-    a header cannot carry raises too, without the key: httpx's own error would quote it whole."""
+    `_KEY_ENV_VARS` that is set. With neither there is no Authorization header: the free catalog
+    calls still work and every other call raises (see `require_key`). A key with a character
+    a header cannot carry raises, without the key: httpx's own error would quote it whole."""
     key = (api_key or next((os.environ[n] for n in _KEY_ENV_VARS if os.environ.get(n)), "")).strip()
+    user_agent = {"User-Agent": f"crawl4ai-cloud-python/{__version__}"}
     if not key:
-        raise AuthenticationError("No API key: pass api_key=... or set CRAWL4AI_API_KEY.")
+        return user_agent
     if not re.fullmatch(r"[\x21-\x7e]+", key):
         raise AuthenticationError("The API key has a character that is not allowed.")
-    return {"Authorization": f"Bearer {key}", "User-Agent": f"crawl4ai-cloud-python/{__version__}"}
+    return {"Authorization": f"Bearer {key}", **user_agent}
 
 
-def should_retry(status: int, safe: bool) -> bool:
-    """True when a request that got `status` is worth sending again.
+def require_key(headers: dict[str, str]) -> None:
+    """Raises AuthenticationError, before anything is sent, when the client has no key."""
+    if "Authorization" not in headers:
+        raise AuthenticationError("No API key: pass api_key=... or set CRAWL4AI_API_KEY.")
 
-    429 and 503 mean the server did not start the work, so every request retries them.
+
+def should_retry(error: Crawl4AIError, safe: bool) -> bool:
+    """True when a request that got `error` is worth sending again.
+
+    429 and 503 mean the server did not start the work, so every request retries them, except a
+    503 `tool_failing`: the tool's daily check is failing, so the same call fails again.
     500 and 504 retry only when `safe` (sending the request twice cannot run the work twice).
     """
-    return status in (429, 503) or (safe and status in (500, 504))
+    if error.code == "tool_failing":
+        return False
+    return error.status in (429, 503) or (safe and error.status in (500, 504))
 
 
 def retry_delay(attempt: int, response: httpx.Response | None = None) -> float:
@@ -77,20 +92,46 @@ def error_from(response: httpx.Response) -> Crawl4AIError:
     """Builds the exception for an error answer; the body must already be read.
 
     The server sends `{"error": code, "message": ..., "actions": ...}`, `/scrape` sends
-    `{"ok": false, "reason": code}`, and some errors send plain text or nothing.
+    `{"ok": false, "reason": code}`, `/tools` adds `details` or `did_you_mean`, and some errors
+    send plain text or nothing.
     """
     status = response.status_code
     try:
         body = response.json()
     except ValueError:
         body = None
+    text = "" if isinstance(body, dict) else response.text.strip()[:500]
     if not isinstance(body, dict):
         body = {}
     code = body.get("error") or body.get("reason")
     code = None if code is None else str(code)
-    message = body.get("message") or code or response.text.strip()[:500] or f"HTTP {status}"
+    # /tools says what is wrong in `details`: [{"input": "url", "problem": "url is required"}]
+    details = body.get("details")
+    problems = [str(d["problem"]) for d in details if isinstance(d, dict) and d.get("problem")] if isinstance(details, list) else []
+    detail = f"{code}: {'; '.join(problems)}" if code and problems else code
+    message = body.get("message") or detail or text or f"HTTP {status}"
     error_class = _ERROR_BY_STATUS.get(status) or (ServerError if status >= 500 else Crawl4AIError)
-    return error_class(message, status=status, code=code, actions=body.get("actions"))
+    return error_class(message, status=status, code=code, actions=body.get("actions"), body=body or None)
+
+
+@contextmanager
+def reading(path: str) -> Iterator[None]:
+    """Turns a failure while an answer's body comes in into APITimeoutError or APIConnectionError.
+    It is never retried: the server answered, so it may already have done the work."""
+    try:
+        yield
+    except httpx.TimeoutException as e:
+        raise APITimeoutError(f"{path}: the answer stopped coming in time: {e}") from e
+    except httpx.TransportError as e:
+        raise APIConnectionError(f"{path}: the answer stopped: {e}") from e
+
+
+def parse(text: bytes, path: str) -> Any:
+    """Reads JSON. A body that is not JSON (a proxy's HTML page, say) raises APIConnectionError."""
+    try:
+        return json.loads(text)
+    except ValueError as e:
+        raise APIConnectionError(f"{path}: the answer is not JSON: {text[:100].decode(errors='replace')}") from e
 
 
 def body(**fields: Any) -> dict[str, Any]:
@@ -106,6 +147,14 @@ def flag(value: bool | None) -> int | None:
 def schema_param(schema: dict[str, Any] | None) -> str | None:
     """Turns a JSON Schema into the JSON text `/answer` takes in its query string."""
     return None if schema is None else json.dumps(schema, separators=(",", ":"))
+
+
+def tool_path(tool_id: str, tail: str = "") -> str:
+    """Returns `/tools/<tool_id><tail>`, with the id escaped for a URL.
+    Raises ValueError for an empty id or `.` / `..`, which a URL reads as a folder step."""
+    if tool_id in ("", ".", ".."):
+        raise ValueError(f"Not a tool id: {tool_id!r}")
+    return f"/tools/{quote(tool_id, safe='')}{tail}"
 
 
 def job_path(job_id: str, tail: str = "") -> str:

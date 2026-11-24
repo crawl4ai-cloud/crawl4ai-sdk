@@ -5,22 +5,31 @@
  *
  * `status` is the HTTP status (undefined when no answer came back), `code` the server's short code
  * (`no_credit`, `blocked`, ...), `message` text you can show to people as it is, and `actions`
- * the server's links that fix the problem (for example `subscribe`).
+ * the server's links that fix the problem (for example `subscribe`). `body` is the whole error
+ * answer, with extra fields such as `details` or `did_you_mean` when the server sends them.
  */
 export class Crawl4AIError extends Error {
   readonly status?: number;
   readonly code?: string;
   readonly actions?: Record<string, unknown>;
+  readonly body?: Record<string, unknown>;
 
   constructor(
     message: string,
-    options: { status?: number; code?: string; actions?: Record<string, unknown>; cause?: unknown } = {},
+    options: {
+      status?: number;
+      code?: string;
+      actions?: Record<string, unknown>;
+      body?: Record<string, unknown>;
+      cause?: unknown;
+    } = {},
   ) {
     super(message, { cause: options.cause });
     this.name = new.target.name;
     this.status = options.status;
     this.code = options.code;
     this.actions = options.actions;
+    this.body = options.body;
   }
 }
 

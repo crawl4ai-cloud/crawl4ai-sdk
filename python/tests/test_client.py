@@ -13,6 +13,7 @@ from crawl4ai_cloud import (
     BadRequestError,
     BlockedError,
     Crawl4AI,
+    NotFoundError,
     PaymentRequiredError,
     RateLimitError,
     ServerError,
@@ -55,7 +56,7 @@ def ndjson(*lines):
 
 def test_key_from_env_and_missing(monkeypatch):
     with pytest.raises(AuthenticationError):
-        Crawl4AI()
+        Crawl4AI().scrape("https://example.com")  # no transport: raising here means nothing was sent
     monkeypatch.setenv("CRAWL4AI_KEY", "sk_old_name")
     assert Crawl4AI()._headers["Authorization"] == "Bearer sk_old_name"
     monkeypatch.setenv("CRAWL4AI_API_KEY", "sk_new_name")
@@ -188,6 +189,18 @@ def test_wait_never_sleeps_past_its_timeout(monkeypatch, no_sleep):
     assert no_sleep == [1.0]  # 1 s left, not the full 5 s
 
 
+def test_search_sends_deep_as_1_and_reads_markdown_and_deep_pages():
+    client, requests = fake(httpx.Response(200, json={
+        "results": [{"url": "https://a.com", "markdown": "# A"}, {"url": "https://b.com"}],
+        "deep": {"launched": 2, "got": 1, "from_archive": 0, "late": 1, "ms": 900},
+        "usage": {"deep_pages": 1},
+    }))
+    result = client.search("x", deep=True)
+    assert requests[0].url.params["deep"] == "1" and "rich" not in requests[0].url.params
+    assert [r.markdown for r in result.results] == ["# A", None]
+    assert result.deep["got"] == 1 and result.usage == {"deep_pages": 1}
+
+
 def test_answer_sends_schema_as_json_text_and_deep_as_0():
     client, requests = fake(httpx.Response(200, json={
         "answered": True, "answer": {"text": '{"city":"Paris"}', "source": "crawl4ai", "sources": [{"title": "T", "url": "u"}]},
@@ -254,6 +267,40 @@ def test_timeout_in_the_middle_of_a_stream_is_a_timeout():
         next(items)
 
 
+def test_line_separator_inside_a_page_does_not_split_the_stream():
+    # U+2028 is valid unescaped in JSON text, and real pages hold it; httpx's iter_lines splits there.
+    body = json.dumps({"url": "https://a.com", "ok": True, "result": {"markdown": "a\u2028b"}}, ensure_ascii=False) + "\n"
+    client, _ = fake(httpx.Response(200, content=body.encode()))
+    assert [i.result.markdown for i in client.scrape_batch(["https://a.com"])] == ["a\u2028b"]
+
+    async def run():
+        transport = httpx.MockTransport(lambda request: httpx.Response(200, content=body.encode()))
+        async with AsyncCrawl4AI("sk_test", http_client=httpx.AsyncClient(transport=transport)) as client:
+            return [i.result.markdown async for i in client.scrape_batch(["https://a.com"])]
+
+    assert asyncio.run(run()) == ["a\u2028b"]
+
+
+def test_200_cut_off_midway_is_not_sent_again():
+    class CutOff(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b'{"ok": true, "mark'
+            raise httpx.ReadError("connection reset")
+
+    client, requests = fake(httpx.Response(200, stream=CutOff()), httpx.Response(200, json=PAGE))
+    with pytest.raises(client_module.APIConnectionError):
+        client.scrape("https://example.com")
+    assert len(requests) == 1  # the 200 shows the page already ran and was paid for
+
+
+def test_answer_that_is_not_json_is_a_connection_error():
+    client, _ = fake(httpx.Response(200, text="<html>proxy login</html>"), httpx.Response(200, text="<html>\n"))
+    with pytest.raises(client_module.APIConnectionError, match="not JSON: <html>proxy login"):
+        client.search("x")
+    with pytest.raises(client_module.APIConnectionError, match="not JSON"):
+        list(client.scrape_batch(["https://a.com"]))
+
+
 def test_async_client_retries_and_streams(monkeypatch):
     waits = []
 
@@ -276,3 +323,130 @@ def test_async_client_retries_and_streams(monkeypatch):
 
     page, items = asyncio.run(run())
     assert page.markdown == "# Hi" and [i.url for i in items] == ["https://a.com"] and waits == [2.0]
+
+
+def test_tools_find_sends_the_filters_and_reads_the_page():
+    client, requests = fake(httpx.Response(200, json={
+        "tools": [{"id": "amazon-product", "name": ["Amazon", "product"], "cost": "1 cr", "status": "verified"}],
+        "total": 3, "next_cursor": "2",
+    }))
+    page = client.tools.find("amazon product", kind="sites", essential=True, limit=2)
+    assert requests[0].url.path == "/tools"
+    assert dict(requests[0].url.params) == {"q": "amazon product", "kind": "sites", "essential": "true", "limit": "2"}
+    assert page.tools[0].id == "amazon-product" and page.tools[0].cost == "1 cr" and page.next_cursor == "2"
+
+
+def test_tools_get_and_estimate_read_the_tool():
+    client, requests = fake(
+        httpx.Response(200, json={"id": "scrape", "inputs": [{"name": "url", "required": True}], "input_schema": {}}),
+        httpx.Response(200, json={"tool": "amazon-product", "data": {"text": "1 cr", "rule": "1 credit a run"}}),
+    )
+    assert client.tools.get("scrape").inputs[0]["name"] == "url"
+    assert client.tools.estimate("amazon-product", {"product": "B0"}).data == {"text": "1 cr", "rule": "1 credit a run"}
+    assert requests[1].method == "POST" and requests[1].url.path == "/tools/amazon-product/estimate"
+    assert json.loads(requests[1].content) == {"product": "B0"}
+
+
+def test_tools_run_posts_the_inputs_and_fresh_and_reads_rows():
+    client, requests = fake(httpx.Response(
+        200, headers={"x-c4-cost": "1.000"},
+        json={"tool": "amazon-product", "request_id": "req_1", "took_ms": 9, "usage": {"credits": 1}, "rows": [{"asin": "B0"}]},
+    ))
+    run = client.tools.run("amazon-product", {"product": "B0", "fresh": "an input, not the option"}, fresh=True)
+    assert json.loads(requests[0].content) == {"product": "B0", "fresh": "an input, not the option"}
+    assert requests[0].headers["crawl4ai-fresh"] == "true"
+    assert run.rows == [{"asin": "B0"}] and run.request_id == "req_1" and run.cost == 1.0
+
+
+def test_tools_errors_keep_details_and_did_you_mean():
+    client, _ = fake(
+        httpx.Response(422, json={"error": "invalid_input", "details": [{"problem": "url is required"}], "tool": "scrape"}),
+        httpx.Response(404, json={"error": "tool_not_found", "did_you_mean": ["amazon-product"]}),
+    )
+    with pytest.raises(BadRequestError) as e:
+        client.tools.run("scrape", {})
+    assert e.value.code == "invalid_input" and e.value.message == "invalid_input: url is required"
+    with pytest.raises(NotFoundError) as e:
+        client.tools.get("amazon-produc")
+    assert e.value.body["did_you_mean"] == ["amazon-product"]
+
+
+def test_tools_run_is_not_sent_again_after_a_500_and_tool_failing_is_not_retried(no_sleep):
+    client, requests = fake(httpx.Response(500), httpx.Response(503, json={"error": "tool_failing"}))
+    with pytest.raises(ServerError):
+        client.tools.run("amazon-product", {"product": "B0"})
+    with pytest.raises(ServerError) as e:
+        client.tools.find("amazon")
+    assert len(requests) == 2 and e.value.code == "tool_failing" and no_sleep == []
+
+
+def test_tool_id_that_is_a_folder_step_is_refused():
+    client, requests = fake()
+    with pytest.raises(ValueError):
+        client.tools.run("..", {})
+    assert requests == []
+
+
+def test_a_cost_header_that_is_not_a_number_does_not_fail_a_charged_call():
+    client, _ = fake(httpx.Response(200, headers={"x-c4-cost": "abc", "x-c4-balance": ""}, json=PAGE))
+    page = client.scrape("https://example.com")
+    assert page.markdown == "# Hi" and page.cost is None and page.balance is None
+
+
+def test_async_tools_find_run_and_batch():
+    async def go():
+        answers = [httpx.Response(200, json={"tools": [{"id": "scrape"}]}),
+                   httpx.Response(200, json={"tool": "scrape", "data": {"markdown": "# Hi"}}),
+                   httpx.Response(202, json={"tool": "scrape", "data": {"job_id": "j_1"}})]
+        transport = httpx.MockTransport(lambda request: answers.pop(0))
+        async with AsyncCrawl4AI("sk_test", http_client=httpx.AsyncClient(transport=transport)) as client:
+            found = await client.tools.find("scrape")
+            run = await client.tools.run(found.tools[0].id, {"url": "https://example.com"})
+            job = await client.tools.batch("scrape", [{"url": "https://example.com"}])
+            return run.data["markdown"], job.data["job_id"]
+    assert asyncio.run(go()) == ("# Hi", "j_1")
+
+
+def test_without_a_key_only_find_and_get_are_sent():
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={"tools": [], "id": "scrape"})
+
+    client = Crawl4AI(http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    client.tools.find("amazon")
+    client.tools.get("scrape")
+    assert [("authorization" in r.headers) for r in requests] == [False, False]
+    for call in (lambda: client.tools.run("scrape", {}), lambda: client.tools.estimate("scrape", {})):
+        with pytest.raises(AuthenticationError):
+            call()
+    assert len(requests) == 2
+
+
+def test_tools_batch_posts_tool_and_inputs_and_is_not_sent_again_after_a_500():
+    job = {"tool": "scrape", "request_id": "req_1", "data": {"job_id": "j_1", "status": "pending"}}
+    client, requests = fake(httpx.Response(202, json=job))
+    run = client.tools.batch("scrape", [{"url": "https://example.com"}])
+    assert (requests[0].url.path, json.loads(requests[0].content)) == (
+        "/tools/batch",
+        {"tool": "scrape", "inputs": [{"url": "https://example.com"}]},
+    )
+    assert run.data["job_id"] == "j_1"
+    client, requests = fake(httpx.Response(500), httpx.Response(202, json=job))
+    with pytest.raises(ServerError):
+        client.tools.batch("scrape", [{"url": "https://example.com"}])
+    assert len(requests) == 1
+
+
+def test_without_a_key_find_does_not_send_the_http_clients_own_credentials():
+    seen = []
+
+    def handler(request):
+        seen.append(request.headers.get("authorization"))
+        return httpx.Response(200, json={"tools": []})
+
+    transport = httpx.MockTransport(handler)
+    Crawl4AI(http_client=httpx.Client(headers={"Authorization": "Bearer other"}, transport=transport)).tools.find()
+    Crawl4AI(http_client=httpx.Client(auth=("user", "pass"), transport=transport)).tools.find()
+    assert seen == [None, None]

@@ -11,6 +11,7 @@ import {
   BlockedError,
   Crawl4AI,
   type Crawl4AIError,
+  NotFoundError,
   PaymentRequiredError,
   RateLimitError,
   type ScrapeBatchItem,
@@ -76,7 +77,7 @@ function fake(...answers: Response[]): { client: Crawl4AI; sent: Sent[] } {
 }
 
 test("a missing key throws; the env key is sent, and CRAWL4AI_API_KEY wins", async () => {
-  assert.throws(() => new Crawl4AI(), AuthenticationError);
+  await assert.rejects(new Crawl4AI({ fetch: async () => assert.fail("sent") }).scrape("https://example.com"), AuthenticationError);
   const seen: string[] = [];
   const fetch = async (_url: string | URL | Request, init?: RequestInit) => {
     seen.push((init?.headers as Record<string, string>).Authorization ?? "");
@@ -117,9 +118,9 @@ test("scrape sends only the fields that are set and reads the result", async () 
   assert.equal((page as unknown as Record<string, unknown>).new_field, 1); // a field the SDK does not know is kept
 });
 
-test("bypass_cache is sent", async () => {
+test("bypassCache is sent as bypass_cache", async () => {
   const { client, sent } = fake(json(PAGE));
-  await client.scrape("https://example.com", { bypass_cache: true });
+  await client.scrape("https://example.com", { bypassCache: true });
   assert.deepEqual(sent[0]?.json, { url: "https://example.com", bypass_cache: true });
 });
 
@@ -260,6 +261,22 @@ test("retryScrapeJob reads usage", async () => {
   assert.deepEqual(result.usage, { units: 2 });
 });
 
+test("search sends deep as 1 and reads markdown and deep_pages", async () => {
+  const { client, sent } = fake(
+    json({
+      results: [{ url: "https://a.com", markdown: "# A" }, { url: "https://b.com" }],
+      deep: { launched: 2, got: 1, from_archive: 0, late: 1, ms: 900 },
+      usage: { deep_pages: 1 },
+    }),
+  );
+  const result = await client.search("x", { deep: true });
+  assert.equal(sent[0]!.url.searchParams.get("deep"), "1");
+  assert.equal(sent[0]!.url.searchParams.has("rich"), false);
+  assert.deepEqual(result.results.map((r) => r.markdown), ["# A", undefined]);
+  assert.equal(result.deep?.got, 1);
+  assert.equal(result.usage?.deep_pages, 1);
+});
+
 test("answer sends the schema as JSON text and deep as 0", async () => {
   const { client, sent } = fake(
     json({ answered: true, answer: { text: '{"city":"Paris"}', source: "crawl4ai", sources: [{ title: "T", url: "u" }] } }),
@@ -385,4 +402,115 @@ test("the last line without a newline stops the timer before the caller gets it"
   assert.equal(signal?.aborted, false);
   const row: ScrapeJobItem = { url: "https://a.com", ok: false, content_hash: null }; // compiles: the spec allows null
   assert.equal(row.content_hash, null);
+});
+
+test("tools.find sends the filters and reads the page", async () => {
+  const { client, sent } = fake(json({ tools: [{ id: "amazon-product", cost: "1 cr" }], total: 3, next_cursor: "2" }));
+  const page = await client.tools.find("amazon product", { kind: "sites", essential: true, limit: 2 });
+  assert.equal(sent[0]!.url.pathname, "/tools");
+  assert.equal(sent[0]!.url.search, "?q=amazon+product&kind=sites&essential=true&limit=2");
+  assert.equal(page.tools[0]?.id, "amazon-product");
+  assert.equal(page.next_cursor, "2");
+});
+
+test("tools.get and tools.estimate read the tool", async () => {
+  const { client, sent } = fake(
+    json({ id: "scrape", inputs: [{ name: "url", required: true }], cost: { text: "0.05 to 2 cr" } }),
+    json({ tool: "amazon-product", data: { text: "1 cr" } }),
+  );
+  const tool = await client.tools.get("scrape");
+  assert.equal(tool.inputs?.[0]?.name, "url");
+  assert.deepEqual(tool.cost, { text: "0.05 to 2 cr" }); // the tool's price, not the call's cost header
+  assert.equal((await client.tools.estimate("amazon-product", { product: "B0" })).data?.text, "1 cr");
+  assert.equal(sent[1]!.method, "POST");
+  assert.equal(sent[1]!.url.pathname, "/tools/amazon-product/estimate");
+  assert.deepEqual(sent[1]!.json, { product: "B0" });
+});
+
+test("tools.run posts the inputs and fresh and reads rows", async () => {
+  const { client, sent } = fake(
+    json({ tool: "amazon-product", request_id: "req_1", usage: { credits: 1 }, rows: [{ asin: "B0" }] }, 200, {
+      "x-c4-cost": "1.000",
+    }),
+  );
+  const run = await client.tools.run("amazon-product", { product: "B0", fresh: "an input" }, { fresh: true });
+  assert.deepEqual(sent[0]!.json, { product: "B0", fresh: "an input" });
+  assert.equal(sent[0]!.headers["Crawl4AI-Fresh"], "true");
+  assert.deepEqual(run.rows, [{ asin: "B0" }]);
+  assert.equal(run.cost, 1);
+});
+
+test("tools errors keep details and did_you_mean", async () => {
+  const { client } = fake(
+    json({ error: "invalid_input", details: [{ problem: "url is required" }] }, 422),
+    json({ error: "tool_not_found", did_you_mean: ["amazon-product"] }, 404),
+  );
+  const invalid = await client.tools.run("scrape", {}).catch((e: unknown) => e);
+  assert.ok(invalid instanceof BadRequestError);
+  assert.equal(invalid.message, "invalid_input: url is required");
+  const missing = await client.tools.get("amazon-produc").catch((e: unknown) => e);
+  assert.ok(missing instanceof NotFoundError);
+  assert.deepEqual(missing.body?.did_you_mean, ["amazon-product"]);
+});
+
+test("tools.run is not sent again after a 500, and tool_failing is not retried", async () => {
+  const { client, sent } = fake(json({}, 500), json({ error: "tool_failing" }, 503));
+  await assert.rejects(client.tools.run("amazon-product", { product: "B0" }), ServerError);
+  await assert.rejects(client.tools.find("amazon"), (e: Crawl4AIError) => e.code === "tool_failing");
+  assert.equal(sent.length, 2);
+  assert.deepEqual(waits, []);
+});
+
+test("a tool id that is a folder step is refused before any call", async () => {
+  const { client, sent } = fake();
+  await assert.rejects(client.tools.run("..", {}), TypeError);
+  assert.equal(sent.length, 0);
+});
+
+test("a cost header that is not a number, or missing, never leaks a body field", async () => {
+  const { client } = fake(json({ ...PAGE, cost: "7.5" }, 200, { "x-c4-balance": "abc" }));
+  const page = await client.scrape("https://example.com");
+  assert.equal(page.cost, undefined);
+  assert.equal(page.balance, undefined);
+});
+
+test("the default fetch is called as a plain function, as a browser needs", async () => {
+  const real = globalThis.fetch;
+  let self: unknown = "not called";
+  globalThis.fetch = function (this: unknown) {
+    self = this;
+    return Promise.resolve(json(PAGE));
+  } as typeof fetch;
+  try {
+    await new Crawl4AI({ apiKey: "sk_test" }).scrape("https://example.com");
+  } finally {
+    globalThis.fetch = real;
+  }
+  assert.equal(self, globalThis); // not the client: a browser's fetch throws "Illegal invocation" then
+});
+
+test("without a key only tools.find and tools.get are sent", async () => {
+  const seen: (string | undefined)[] = [];
+  const fetch = async (_url: string | URL | Request, init?: RequestInit) => {
+    seen.push((init?.headers as Record<string, string>).Authorization);
+    return json({ tools: [], id: "scrape" });
+  };
+  const client = new Crawl4AI({ fetch });
+  await client.tools.find("amazon");
+  await client.tools.get("scrape");
+  await assert.rejects(client.tools.run("scrape", {}), AuthenticationError);
+  await assert.rejects(client.tools.estimate("scrape", {}), AuthenticationError);
+  assert.deepEqual(seen, [undefined, undefined]);
+});
+
+test("tools.batch posts the tool and inputs and is not sent again after a 500", async () => {
+  const job = { tool: "scrape", request_id: "req_1", data: { job_id: "j_1", status: "pending" } };
+  let { client, sent } = fake(json(job, 202));
+  const run = await client.tools.batch("scrape", [{ url: "https://example.com" }]);
+  assert.equal(sent[0]!.url.pathname, "/tools/batch");
+  assert.deepEqual(sent[0]!.json, { tool: "scrape", inputs: [{ url: "https://example.com" }] });
+  assert.equal((run.data as { job_id: string }).job_id, "j_1");
+  ({ client, sent } = fake(new Response(null, { status: 500 }), json(job, 202)));
+  await assert.rejects(client.tools.batch("scrape", [{ url: "https://example.com" }]), ServerError);
+  assert.equal(sent.length, 1);
 });

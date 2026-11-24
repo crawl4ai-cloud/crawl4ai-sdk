@@ -138,13 +138,32 @@ type SearchItem struct {
 	URL     string `json:"url"`
 	Snippet string `json:"snippet,omitempty"`
 	Source  string `json:"source,omitempty"`
+	// Markdown is the page's text, only with SearchOptions.Deep; empty when the page gave none in time.
+	Markdown string `json:"markdown,omitempty"`
 }
 
-// SearchResult is the answer to Search. Rich is set only with SearchOptions.Rich.
+// SearchResult is the answer to Search. Rich is set only with SearchOptions.Rich; Deep and
+// Usage.DeepPages only with SearchOptions.Deep.
 type SearchResult struct {
 	Meta
 	Results []SearchItem `json:"results"`
 	Rich    *SearchRich  `json:"rich,omitempty"`
+	Deep    *SearchDeep  `json:"deep,omitempty"`
+	Usage   *SearchUsage `json:"usage,omitempty"`
+}
+
+// SearchDeep counts the pages SearchOptions.Deep read. Got is the pages whose text is in a result.
+type SearchDeep struct {
+	Launched    int `json:"launched"`
+	Got         int `json:"got"`
+	FromArchive int `json:"from_archive"`
+	Late        int `json:"late"`
+	Ms          int `json:"ms"`
+}
+
+// SearchUsage is what a search used. DeepPages is the pages charged, equal to SearchDeep.Got.
+type SearchUsage struct {
+	DeepPages int `json:"deep_pages,omitempty"`
 }
 
 // SearchRich holds what the results page showed besides the results, each field only when it was there.

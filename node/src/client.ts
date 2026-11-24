@@ -17,13 +17,20 @@ import type {
   ScrapeResult,
   SearchResult,
   SerpResult,
+  Tool,
+  ToolEstimate,
+  ToolList,
+  ToolRun,
 } from "./types.js";
 
 // a job's status once it no longer changes by itself
 const JOB_STOPPED = ["done", "paused"];
 
 export interface ClientOptions {
-  /** Your key; when not given it is read from `CRAWL4AI_API_KEY`. */
+  /**
+   * Your key; when not given it is read from `CRAWL4AI_API_KEY`. Without one only `tools.find`
+   * and `tools.get` work; every other call throws AuthenticationError.
+   */
   apiKey?: string;
   /** The API address. */
   baseUrl?: string;
@@ -38,8 +45,13 @@ export interface ClientOptions {
 interface Call {
   query?: Record<string, unknown>;
   json?: Record<string, unknown>;
+  headers?: Record<string, string>;
+  /** false for a free call whose answer has fields of its own named like the cost headers (a tool's `cost`). */
+  costs?: boolean;
   /** false for a call that must never run twice: it is not retried after a 500 or a lost connection. */
   safe?: boolean;
+  /** true for a free call that is sent even when the client has no key. */
+  keyless?: boolean;
 }
 
 /**
@@ -78,6 +90,94 @@ function parse(text: string, path: string): Record<string, unknown> {
   }
 }
 
+/** The options of `tools.find`. An option left out is not sent. */
+export interface FindToolsOptions {
+  /** `pages`, `search`, `people` or `sites`. */
+  kind?: "pages" | "search" | "people" | "sites" | (string & {});
+  /** One site, for example `amazon`. */
+  source?: string;
+  /** `verified`, `beta` or `failing`. */
+  status?: "verified" | "beta" | "failing" | (string & {});
+  /** true for the tools that work on any website. */
+  essential?: boolean;
+  /** Tools per page: 50 by default, at most 200. */
+  limit?: number;
+  /** `next_cursor` of the last page. */
+  cursor?: string;
+}
+
+/**
+ * The Toolkit, reached as `client.tools`: every Crawl4AI tool, called the same way.
+ *
+ * A tool is one kind of data: `scrape`, `search` and `extract` work on any website, and a ready
+ * tool exists for each supported site (`amazon-product`, `linkedin-company`, ...). Find one with
+ * `find`, read its inputs with `get`, price a run with `estimate`, run it with `run`, or run it on
+ * many inputs as one job with `batch`.
+ *
+ * Example:
+ *   import { Crawl4AI } from "crawl4ai-cloud";
+ *
+ *   const client = new Crawl4AI();
+ *   const [tool] = (await client.tools.find("amazon product")).tools;
+ *   console.log((await client.tools.run(tool.id, { product: "B0F5HSNDXF" })).rows);
+ */
+export interface Tools {
+  /**
+   * Lists the tools, best match for `q` first (`GET /tools`). Free, and works without a key.
+   * Every word of `q` must be in the tool's id, name, site, summary or search words.
+   *
+   * Example:
+   *   const { tools } = await new Crawl4AI().tools.find("amazon");
+   *   for (const tool of tools) console.log(tool.id, tool.cost, tool.summary);
+   */
+  find(q?: string, options?: FindToolsOptions): Promise<ToolList>;
+  /**
+   * One tool in full: its `inputs`, `output`, `cost`, `examples` and `input_schema` (`GET /tools/{id}`).
+   * Free, and works without a key. An unknown id throws NotFoundError; its `body.did_you_mean` lists the closest ids.
+   *
+   * Example:
+   *   const tool = await new Crawl4AI().tools.get("amazon-product");
+   *   console.log(tool.inputs?.map((input) => input.name));
+   */
+  get(toolId: string): Promise<Tool>;
+  /**
+   * What a run with these `inputs` would cost, before it runs (`POST /tools/{id}/estimate`). Free.
+   *
+   * Example:
+   *   console.log((await new Crawl4AI().tools.estimate("amazon-product", { product: "B0F5HSNDXF" })).data?.text);
+   */
+  estimate(toolId: string, inputs: Record<string, unknown>): Promise<ToolEstimate>;
+  /**
+   * Runs a tool on your key, at the price of the tool's own address (`POST /tools/{id}`).
+   *
+   * A tool that returns rows puts them in `rows`; the rest of its answer is in `data`. A failed run
+   * is not charged. The call is never sent twice after a 500 or a lost connection, since it may
+   * already have run and been charged. `fresh: true` skips the cache, at the live price.
+   *
+   * Throws BadRequestError (`invalid_input`, the problem in the message), NotFoundError
+   * (`tool_not_found`) and ServerError (`tool_failing`: the tool's daily check is failing; not retried).
+   *
+   * Example:
+   *   const run = await new Crawl4AI().tools.run("scrape", { url: "https://example.com" });
+   *   console.log(run.data, run.usage);
+   */
+  run(toolId: string, inputs: Record<string, unknown>, options?: { fresh?: boolean }): Promise<ToolRun>;
+  /**
+   * Runs a tool on many inputs as one background job and returns at once (`POST /tools/batch`).
+   * The job is in `data`: wait for it with `waitScrapeJob` on `data.job_id`, then read it with
+   * `getScrapeJobResults`. A tool with no batch throws BadRequestError. Never sent twice after a
+   * 500 or a lost connection, so a job is never started twice.
+   *
+   * Example:
+   *   const client = new Crawl4AI();
+   *   const run = await client.tools.batch("scrape", [{ url: "https://example.com" }, { url: "https://example.org" }]);
+   *   const { job_id: jobId } = run.data as { job_id: string };
+   *   await client.waitScrapeJob(jobId);
+   *   for await (const item of client.getScrapeJobResults(jobId)) console.log(item.url, item.ok);
+   */
+  batch(toolId: string, inputs: Record<string, unknown>[]): Promise<ToolRun>;
+}
+
 /**
  * The Crawl4AI Cloud client. Every method is one API call and returns a Promise of its answer;
  * `scrapeBatch` and `getScrapeJobResults` are async iterators.
@@ -101,8 +201,31 @@ export class Crawl4AI {
     this.#baseUrl = (options.baseUrl ?? http.BASE_URL).replace(/\/+$/, "");
     this.#timeout = options.timeout ?? http.TIMEOUT;
     this.#maxRetries = options.maxRetries ?? http.MAX_RETRIES;
-    this.#fetch = options.fetch ?? globalThis.fetch;
+    // called as a plain function: a browser's fetch throws "Illegal invocation" when it is a method of the client
+    this.#fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
+    this.tools = {
+      find: async (q, options = {}) =>
+        this.#json("GET", "/tools", {
+          query: { q, ...options, essential: options.essential ? "true" : undefined },
+          costs: false,
+          keyless: true,
+        }),
+      get: async (toolId) => this.#json("GET", http.toolPath(toolId), { costs: false, keyless: true }),
+      estimate: async (toolId, inputs) =>
+        this.#json("POST", http.toolPath(toolId, "/estimate"), { json: inputs, costs: false }),
+      run: async (toolId, inputs, options = {}) =>
+        this.#json("POST", http.toolPath(toolId), {
+          json: inputs,
+          headers: options.fresh ? { "Crawl4AI-Fresh": "true" } : {},
+          safe: false,
+        }),
+      batch: async (toolId, inputs) =>
+        this.#json("POST", "/tools/batch", { json: { tool: toolId, inputs }, safe: false }),
+    };
   }
+
+  /** The Toolkit: every Crawl4AI tool, called the same way. See `Tools`. */
+  readonly tools: Tools;
 
   /**
    * Sends one request and returns the success answer with its running timer, or throws.
@@ -112,12 +235,14 @@ export class Crawl4AI {
    * 2. On 429 / 503 (and 500 / 504 when `safe`) wait `retryDelay` and send again,
    *    up to `maxRetries` times.
    * 3. Any other error answer throws the error `errorFrom` picks.
-   * The caller reads the body and then stops the timer.
+   * The caller reads the body and then stops the timer. Without a key only a `keyless` call is
+   * sent; any other throws AuthenticationError.
    */
   async #open(method: string, path: string, call: Call = {}): Promise<{ response: Response; timer: IdleTimer }> {
     const { query, json, safe = true } = call;
+    if (!call.keyless) http.requireKey(this.#headers);
     const url = this.#baseUrl + path + http.query(query ?? {});
-    const headers = json ? { ...this.#headers, "Content-Type": "application/json" } : this.#headers;
+    const headers = { ...this.#headers, ...(json ? { "Content-Type": "application/json" } : {}), ...call.headers };
     for (let attempt = 0; ; attempt++) {
       const last = attempt >= this.#maxRetries;
       const timer = idleTimer(this.#timeout);
@@ -141,15 +266,16 @@ export class Crawl4AI {
       // ---- 2. Retry ----
       const text = await response.text().catch(() => "");
       timer.stop();
-      if (last || !http.shouldRetry(response.status, safe)) {
+      const error = http.errorFrom(response.status, text);
+      if (last || !http.shouldRetry(error, safe)) {
         // ---- 3. Throw ----
-        throw http.errorFrom(response.status, text);
+        throw error;
       }
       await http.clock.sleep(http.retryDelay(attempt, response.headers.get("retry-after")));
     }
   }
 
-  /** Sends one request and returns its JSON answer with the cost headers added. */
+  /** Sends one request and returns its JSON answer with the cost headers added (unless `costs: false`). */
   async #json<T>(method: string, path: string, call?: Call): Promise<T> {
     const { response, timer } = await this.#open(method, path, call);
     let text: string;
@@ -162,7 +288,7 @@ export class Crawl4AI {
     } finally {
       timer.stop();
     }
-    return { ...parse(text, path), ...http.costs(response) } as T;
+    return { ...parse(text, path), ...(call?.costs === false ? {} : http.costs(response)) } as T;
   }
 
   /** Sends one request and yields each line of its NDJSON answer as an object, as it arrives. */
@@ -204,7 +330,7 @@ export class Crawl4AI {
    * A site that refuses every attempt throws BlockedError (`code` `blocked` or `login-wall`).
    *
    * Options: `format`, `proxy`, `country`, `parse`, `engine` (see `ScrapeOptions`), and
-   * `bypass_cache`: true to always fetch the page fresh, never from a cached copy.
+   * `bypassCache`: true to always fetch the page fresh, never from a cached copy.
    *
    * Example:
    *   import { Crawl4AI } from "crawl4ai-cloud";
@@ -212,8 +338,9 @@ export class Crawl4AI {
    *   const page = await new Crawl4AI().scrape("https://example.com", { format: "md" });
    *   console.log(page.markdown);
    */
-  scrape(url: string, options: ScrapeOptions & { bypass_cache?: boolean } = {}): Promise<ScrapeResult> {
-    return this.#json("POST", "/scrape", { json: http.body({ url, ...options }) });
+  scrape(url: string, options: ScrapeOptions & { bypassCache?: boolean } = {}): Promise<ScrapeResult> {
+    const { bypassCache, ...rest } = options;
+    return this.#json("POST", "/scrape", { json: http.body({ url, ...rest, bypass_cache: bypassCache }) });
   }
 
   /**
@@ -338,7 +465,9 @@ export class Crawl4AI {
    * Searches the web and returns ranked, cleaned results (`GET /search`).
    *
    * `q` is the query, at most 512 characters. `rich: true` adds follow-up questions, related
-   * queries, an entity card, videos and news.
+   * queries, an entity card, videos and news. `deep: true` also reads the top 10 pages and puts
+   * each page's text in its result's `markdown`: up to 5 s slower, and each page with text costs
+   * one plain scrape page.
    *
    * Example:
    *   import { Crawl4AI } from "crawl4ai-cloud";
@@ -346,7 +475,7 @@ export class Crawl4AI {
    *   const { results } = await new Crawl4AI().search("rust web crawler");
    *   for (const result of results) console.log(result.title, result.url);
    */
-  search(q: string, options: { rich?: boolean } = {}): Promise<SearchResult> {
+  search(q: string, options: { rich?: boolean; deep?: boolean } = {}): Promise<SearchResult> {
     return this.#json("GET", "/search", { query: { q, ...options } });
   }
 

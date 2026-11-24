@@ -11,13 +11,19 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 import httpx
 
+from . import _http
+
 if TYPE_CHECKING:
     from typing_extensions import Self  # only for the type checker; typing.Self needs Python 3.11
 
 
 def _credits(value: Any) -> float | None:
-    """Turns a credits figure (the server sends text like "0.500") into a float; None stays None."""
-    return None if value is None else float(value)
+    """Turns a credits figure (the server sends text like "0.500") into a float. None, or text
+    that is not a number, is None: a bad header must not fail a call that was already charged."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 @dataclass(kw_only=True, slots=True)
@@ -58,7 +64,7 @@ class Response(Model):
     @classmethod
     def from_response(cls, response: httpx.Response) -> Self:
         """Reads the JSON body and the `x-c4-cost`, `x-c4-balance`, `x-c4-allowance-left` headers."""
-        result = cls.from_dict(response.json())
+        result = cls.from_dict(_http.parse(response.content, response.request.url.path))
         result.cost = _credits(response.headers.get("x-c4-cost"))
         result.balance = _credits(response.headers.get("x-c4-balance"))
         result.allowance_left = _credits(response.headers.get("x-c4-allowance-left"))
@@ -153,21 +159,26 @@ class ScrapeJobRetry(Response):
 
 @dataclass(kw_only=True, slots=True)
 class SearchItem(Model):
-    """One web result. `source` is `gg` or `gs` for a live result, `index` for the Crawl4AI index."""
+    """One web result. `source` is `gg` or `gs` for a live result, `index` for the Crawl4AI index.
+    `markdown` (only with `deep=True`) is the page's text, absent when the page gave none in time."""
 
     title: str | None = None
     url: str | None = None
     snippet: str | None = None
     source: str | None = None
+    markdown: str | None = None
 
 
 @dataclass(kw_only=True, slots=True)
 class SearchResult(Response):
     """The answer to `search`. `rich` (only with `rich=True`) holds follow-up questions, related
-    queries, an entity card and more, each key only when it was on the page."""
+    queries, an entity card and more, each key only when it was on the page. `deep` and
+    `usage["deep_pages"]` (only with `deep=True`) count the pages read and the pages charged."""
 
     results: list[SearchItem] | None = None
     rich: dict[str, Any] | None = None
+    deep: dict[str, Any] | None = None
+    usage: dict[str, Any] | None = None
 
     _nested: ClassVar[dict[str, type[Model]]] = {"results": SearchItem}
 
@@ -245,3 +256,85 @@ class ExtractResult(Response):
     data: Any = None
     usage: dict[str, Any] | None = None
     ms: int | None = None
+
+
+@dataclass(kw_only=True, slots=True)
+class ToolSummary(Model):
+    """One tool in the list `tools.find` returns: `id`, `name` (`[lead word, rest]`), `source` (the
+    site), `kind`, `summary`, `cost` (text like `1 cr`), `typical` (a typical run time), `status`
+    (`verified`, `beta` or `failing`), `essential`, `beta` and `inputs` (the input names; a name
+    ending in `*` is required). `tools.get` gives the tool in full."""
+
+    id: str | None = None
+    name: list[str] | None = None
+    source: str | None = None
+    kind: str | None = None
+    summary: str | None = None
+    cost: str | None = None
+    typical: str | None = None
+    status: str | None = None
+    essential: bool | None = None
+    beta: bool | None = None
+    inputs: list[str] | None = None
+
+
+@dataclass(kw_only=True, slots=True)
+class Tool(Model):
+    """One tool in full, from `tools.get`: the fields of `ToolSummary`, except that `name` is
+    `{"lead": ..., "rest": ...}`, `cost` is `{"text": ..., "rule": ...}` and each of `inputs` has
+    `name`, `type`, `required`, `help` and `example`; plus `description`, `output`
+    (`output["fields"]`), `examples` and `input_schema` (a JSON Schema of the inputs)."""
+
+    id: str | None = None
+    name: dict[str, str] | None = None
+    source: str | None = None
+    kind: str | None = None
+    summary: str | None = None
+    cost: dict[str, Any] | None = None
+    typical: str | None = None
+    status: str | None = None
+    essential: bool | None = None
+    beta: bool | None = None
+    description: str | None = None
+    inputs: list[dict[str, Any]] | None = None
+    output: dict[str, Any] | None = None
+    examples: list[dict[str, Any]] | None = None
+    input_schema: dict[str, Any] | None = None
+
+
+@dataclass(kw_only=True, slots=True)
+class ToolList(Model):
+    """The answer to `tools.find`: the `tools` on this page, best match first, the `total` that
+    match, and `next_cursor` for the next page (None on the last page)."""
+
+    tools: list[ToolSummary] | None = None
+    total: int | None = None
+    next_cursor: str | None = None
+    counts: dict[str, Any] | None = None
+
+    _nested: ClassVar[dict[str, type[Model]]] = {"tools": ToolSummary}
+
+
+@dataclass(kw_only=True, slots=True)
+class ToolEstimate(Model):
+    """The answer to `tools.estimate`, with the estimate in `data`: `data["text"]` says the price in
+    words (`1 cr`). A tool priced by what the run returns gives `data["rule"]`; a tool priced by its
+    inputs gives `data["min"]` and `data["max"]`."""
+
+    tool: str | None = None
+    request_id: str | None = None
+    data: dict[str, Any] | None = None
+
+
+@dataclass(kw_only=True, slots=True)
+class ToolRun(Response):
+    """The answer to `tools.run`, the same shape for every tool: the `rows` it found (a tool that
+    returns rows), the rest of its answer in `data`, `usage["credits"]`, `took_ms` and the
+    `request_id` to quote when you report a problem."""
+
+    tool: str | None = None
+    request_id: str | None = None
+    took_ms: int | None = None
+    usage: dict[str, Any] | None = None
+    rows: list[dict[str, Any]] | None = None
+    data: Any = None

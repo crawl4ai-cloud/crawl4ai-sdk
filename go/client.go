@@ -638,7 +638,8 @@ func (c *Client) RetryScrapeJob(ctx context.Context, jobID string) (*ScrapeJobRe
 // SearchOptions are the options of Search. Rich adds follow-up questions, related queries, an
 // entity card, videos and news.
 type SearchOptions struct {
-	Rich bool
+	Rich bool // add follow-up questions, related queries, an entity card, videos and news
+	Deep bool // also read the top 10 pages into each result's Markdown: up to 5 s slower, each page with text costs one plain scrape page
 }
 
 // Search searches the web and returns ranked, cleaned results (GET /search). q is at most 512
@@ -655,6 +656,9 @@ func (c *Client) Search(ctx context.Context, q string, opts *SearchOptions) (*Se
 	query := url.Values{"q": {q}}
 	if opts != nil && opts.Rich {
 		query.Set("rich", "1")
+	}
+	if opts != nil && opts.Deep {
+		query.Set("deep", "1")
 	}
 	return do[SearchResult](ctx, c, call{method: "GET", path: "/search", query: query})
 }

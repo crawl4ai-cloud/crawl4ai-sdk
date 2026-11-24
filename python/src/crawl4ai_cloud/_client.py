@@ -7,7 +7,6 @@ turns an error answer into an exception (the shared rules are in `_http`).
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from collections.abc import AsyncIterator, Iterator
 from typing import TYPE_CHECKING, Any, Literal
@@ -27,6 +26,10 @@ from .types import (
     ScrapeResult,
     SearchResult,
     SerpResult,
+    Tool,
+    ToolEstimate,
+    ToolList,
+    ToolRun,
 )
 
 if TYPE_CHECKING:
@@ -45,7 +48,8 @@ class Crawl4AI:
     """The Crawl4AI Cloud client. Every method is one API call and blocks until the answer comes.
 
     Params:
-        `api_key`: your key; when None it is read from `CRAWL4AI_API_KEY`.
+        `api_key`: your key; when None it is read from `CRAWL4AI_API_KEY`. Without one only
+            `tools.find` and `tools.get` work; every other call raises AuthenticationError.
         `base_url`: the API address. `timeout`: seconds to wait for one answer.
         `max_retries`: how many times a busy or rate-limited call is sent again.
         `http_client`: your own `httpx.Client` (for a proxy, say); the SDK does not close it.
@@ -73,6 +77,7 @@ class Crawl4AI:
         self._timeout = timeout
         self._owns_http = http_client is None
         self._http = http_client or httpx.Client(timeout=timeout)
+        self.tools = Tools(self)
 
     def close(self) -> None:
         """Closes the connections, unless you passed your own `http_client`."""
@@ -92,8 +97,10 @@ class Crawl4AI:
         *,
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
         safe: bool = True,
         stream: bool = False,
+        keyless: bool = False,
     ) -> httpx.Response:
         """Sends one request and returns the success answer, or raises.
 
@@ -102,16 +109,27 @@ class Crawl4AI:
         2. On 429 / 503 (and 500 / 504 when `safe`) wait `retry_delay` and send again,
            up to `max_retries` times.
         3. Any other error answer raises the exception `error_from` picks.
-        With `stream`, the caller reads the body and must close the answer.
+        The body is read after the loop, so a 200 cut off midway is never sent again (it may
+        already have run). With `stream`, the caller reads the body and must close the answer.
+        Without a key only a `keyless` call is sent; any other raises AuthenticationError.
         """
+        if not keyless:
+            _http.require_key(self._headers)
         request = self._http.build_request(
-            method, self._base_url + path, params=params, json=json, headers=self._headers, timeout=self._timeout
+            method,
+            self._base_url + path,
+            params=params,
+            json=json,
+            headers={**self._headers, **(headers or {})},
+            timeout=self._timeout,
         )
+        if "Authorization" not in self._headers:  # no key: never send the http_client's own credentials
+            request.headers.pop("Authorization", None)
         for attempt in range(self._max_retries + 1):
             last = attempt == self._max_retries
             # ---- 1. Send ----
             try:
-                response = self._http.send(request, stream=stream)
+                response = self._http.send(request, stream=True, auth=None)
             except httpx.TimeoutException as e:
                 raise APITimeoutError(f"No answer from {path} in time: {e}") from e
             except httpx.TransportError as e:
@@ -119,28 +137,35 @@ class Crawl4AI:
                     raise APIConnectionError(f"{path}: {e}") from e
                 time.sleep(_http.retry_delay(attempt))
                 continue
+            if response.is_success and stream:
+                return response
+            with _http.reading(path):
+                response.read()  # the answer's JSON, or the error's body for error_from
             if response.is_success:
                 return response
             # ---- 2. Retry ----
-            response.read()  # a streamed error answer: load its body for error_from
-            if last or not _http.should_retry(response.status_code, safe):
+            error = _http.error_from(response)
+            if last or not _http.should_retry(error, safe):
                 # ---- 3. Raise ----
-                raise _http.error_from(response)
+                raise error
             response.close()
             time.sleep(_http.retry_delay(attempt, response))
         raise AssertionError("unreachable: the last attempt returns or raises")
 
     def _lines(self, method: str, path: str, **kwargs: Any) -> Iterator[dict[str, Any]]:
-        """Sends one request and yields each line of its NDJSON answer as a dict, as it arrives."""
+        """Sends one request and yields each line of its NDJSON answer as a dict, as it arrives.
+        Lines end at `\n` only: httpx's `iter_lines` also splits at U+2028, which JSON text may hold."""
         response = self._open(method, path, stream=True, **kwargs)
         try:
-            for line in response.iter_lines():
-                if line.strip():
-                    yield json.loads(line)
-        except httpx.TimeoutException as e:
-            raise APITimeoutError(f"{path}: the answer stopped coming in time: {e}") from e
-        except httpx.TransportError as e:
-            raise APIConnectionError(f"{path}: the answer stopped: {e}") from e
+            buffer = b""
+            with _http.reading(path):
+                for chunk in response.iter_bytes():
+                    *lines, buffer = (buffer + chunk).split(b"\n")
+                    for line in lines:
+                        if line.strip():
+                            yield _http.parse(line, path)
+            if buffer.strip():
+                yield _http.parse(buffer, path)
         finally:
             response.close()
 
@@ -307,12 +332,14 @@ class Crawl4AI:
         """
         return ScrapeJobRetry.from_response(self._open("POST", _http.job_path(job_id, "/retry"), safe=False))
 
-    def search(self, q: str, *, rich: bool | None = None) -> SearchResult:
+    def search(self, q: str, *, rich: bool | None = None, deep: bool | None = None) -> SearchResult:
         """Searches the web and returns ranked, cleaned results (`GET /search`).
 
         Params:
             `q`: the query, at most 512 characters.
             `rich`: True adds follow-up questions, related queries, an entity card, videos and news.
+            `deep`: True also reads the top 10 pages and puts each page's text in its result's
+                `markdown`. Up to 5 s slower; each page with text costs one plain scrape page.
 
         Example:
             from crawl4ai_cloud import Crawl4AI
@@ -320,7 +347,7 @@ class Crawl4AI:
             for result in Crawl4AI().search("rust web crawler").results:
                 print(result.title, result.url)
         """
-        params = _http.body(q=q, rich=_http.flag(rich))
+        params = _http.body(q=q, rich=_http.flag(rich), deep=_http.flag(deep))
         return SearchResult.from_response(self._open("GET", "/search", params=params))
 
     def serp(
@@ -440,6 +467,7 @@ class AsyncCrawl4AI:
         self._timeout = timeout
         self._owns_http = http_client is None
         self._http = http_client or httpx.AsyncClient(timeout=timeout)
+        self.tools = AsyncTools(self)
 
     async def close(self) -> None:
         """Closes the connections, unless you passed your own `http_client`."""
@@ -459,18 +487,29 @@ class AsyncCrawl4AI:
         *,
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
         safe: bool = True,
         stream: bool = False,
+        keyless: bool = False,
     ) -> httpx.Response:
         """Sends one request and returns the success answer, or raises. The steps are the ones of
         `Crawl4AI._open`."""
+        if not keyless:
+            _http.require_key(self._headers)
         request = self._http.build_request(
-            method, self._base_url + path, params=params, json=json, headers=self._headers, timeout=self._timeout
+            method,
+            self._base_url + path,
+            params=params,
+            json=json,
+            headers={**self._headers, **(headers or {})},
+            timeout=self._timeout,
         )
+        if "Authorization" not in self._headers:  # no key: never send the http_client's own credentials
+            request.headers.pop("Authorization", None)
         for attempt in range(self._max_retries + 1):
             last = attempt == self._max_retries
             try:
-                response = await self._http.send(request, stream=stream)
+                response = await self._http.send(request, stream=True, auth=None)
             except httpx.TimeoutException as e:
                 raise APITimeoutError(f"No answer from {path} in time: {e}") from e
             except httpx.TransportError as e:
@@ -478,26 +517,33 @@ class AsyncCrawl4AI:
                     raise APIConnectionError(f"{path}: {e}") from e
                 await asyncio.sleep(_http.retry_delay(attempt))
                 continue
+            if response.is_success and stream:
+                return response
+            with _http.reading(path):
+                await response.aread()
             if response.is_success:
                 return response
-            await response.aread()
-            if last or not _http.should_retry(response.status_code, safe):
-                raise _http.error_from(response)
+            error = _http.error_from(response)
+            if last or not _http.should_retry(error, safe):
+                raise error
             await response.aclose()
             await asyncio.sleep(_http.retry_delay(attempt, response))
         raise AssertionError("unreachable: the last attempt returns or raises")
 
     async def _lines(self, method: str, path: str, **kwargs: Any) -> AsyncIterator[dict[str, Any]]:
-        """Sends one request and yields each line of its NDJSON answer as a dict, as it arrives."""
+        """Sends one request and yields each line of its NDJSON answer as a dict, as it arrives.
+        Lines end at `\n` only, as in `Crawl4AI._lines`."""
         response = await self._open(method, path, stream=True, **kwargs)
         try:
-            async for line in response.aiter_lines():
-                if line.strip():
-                    yield json.loads(line)
-        except httpx.TimeoutException as e:
-            raise APITimeoutError(f"{path}: the answer stopped coming in time: {e}") from e
-        except httpx.TransportError as e:
-            raise APIConnectionError(f"{path}: the answer stopped: {e}") from e
+            buffer = b""
+            with _http.reading(path):
+                async for chunk in response.aiter_bytes():
+                    *lines, buffer = (buffer + chunk).split(b"\n")
+                    for line in lines:
+                        if line.strip():
+                            yield _http.parse(line, path)
+            if buffer.strip():
+                yield _http.parse(buffer, path)
         finally:
             await response.aclose()
 
@@ -613,13 +659,13 @@ class AsyncCrawl4AI:
         """
         return ScrapeJobRetry.from_response(await self._open("POST", _http.job_path(job_id, "/retry"), safe=False))
 
-    async def search(self, q: str, *, rich: bool | None = None) -> SearchResult:
+    async def search(self, q: str, *, rich: bool | None = None, deep: bool | None = None) -> SearchResult:
         """Web search. See `Crawl4AI.search`.
 
         Example:
             results = (await AsyncCrawl4AI().search("rust web crawler")).results
         """
-        params = _http.body(q=q, rich=_http.flag(rich))
+        params = _http.body(q=q, rich=_http.flag(rich), deep=_http.flag(deep))
         return SearchResult.from_response(await self._open("GET", "/search", params=params))
 
     async def serp(
@@ -671,3 +717,178 @@ class AsyncCrawl4AI:
         """
         fields = _http.body(url=url, content=content, instruction=instruction, schema=schema, example=example)
         return ExtractResult.from_response(await self._open("POST", "/extract", json=fields))
+
+
+class Tools:
+    """The Toolkit: every Crawl4AI tool, called the same way. Reach it as `client.tools`.
+
+    A tool is one kind of data: `scrape`, `search` and `extract` work on any website, and a ready
+    tool exists for each supported site (`amazon-product`, `linkedin-company`, ...). Find one with
+    `find`, read its inputs with `get`, price a run with `estimate`, run it with `run`, or
+    run it on many inputs as one job with `batch`.
+
+    Example:
+        from crawl4ai_cloud import Crawl4AI
+
+        client = Crawl4AI()
+        tool = client.tools.find("amazon product").tools[0]
+        print(client.tools.run(tool.id, {"product": "B0F5HSNDXF"}).rows)
+    """
+
+    def __init__(self, client: Crawl4AI) -> None:
+        self._client = client
+
+    def find(
+        self,
+        q: str | None = None,
+        *,
+        kind: Literal["pages", "search", "people", "sites"] | None = None,
+        source: str | None = None,
+        status: Literal["verified", "beta", "failing"] | None = None,
+        essential: bool | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> ToolList:
+        """Lists the tools, best match for `q` first (`GET /tools`). Free, and works without a key.
+
+        Params:
+            `q`: a few words; every word must be in the tool's id, name, site, summary or search words.
+            `kind`: `pages`, `search`, `people` or `sites`. `source`: one site, for example `amazon`.
+            `status`: `verified`, `beta` or `failing`. `essential`: True for the tools that work on any site.
+            `limit`: tools per page (50 by default, at most 200). `cursor`: `next_cursor` of the last page.
+
+        Example:
+            from crawl4ai_cloud import Crawl4AI
+
+            for tool in Crawl4AI().tools.find("amazon").tools:
+                print(tool.id, tool.cost, tool.summary)
+        """
+        params = _http.body(
+            q=q, kind=kind, source=source, status=status, essential="true" if essential else None, limit=limit, cursor=cursor
+        )
+        return ToolList.from_dict(_http.parse(self._client._open("GET", "/tools", params=params, keyless=True).content, "/tools"))
+
+    def get(self, tool_id: str) -> Tool:
+        """One tool in full: its `inputs`, `output`, `cost`, `examples` and `input_schema` (`GET /tools/{id}`).
+        Free, and works without a key. An unknown id raises NotFoundError; its `body["did_you_mean"]` lists the closest ids.
+
+        Example:
+            from crawl4ai_cloud import Crawl4AI
+
+            tool = Crawl4AI().tools.get("amazon-product")
+            print([i["name"] for i in tool.inputs])
+        """
+        path = _http.tool_path(tool_id)
+        return Tool.from_dict(_http.parse(self._client._open("GET", path, keyless=True).content, path))
+
+    def estimate(self, tool_id: str, inputs: dict[str, Any]) -> ToolEstimate:
+        """What a run with these `inputs` would cost, before it runs (`POST /tools/{id}/estimate`). Free.
+
+        Example:
+            from crawl4ai_cloud import Crawl4AI
+
+            print(Crawl4AI().tools.estimate("amazon-product", {"product": "B0F5HSNDXF"}).data["text"])
+        """
+        path = _http.tool_path(tool_id, "/estimate")
+        return ToolEstimate.from_dict(_http.parse(self._client._open("POST", path, json=inputs).content, path))
+
+    def run(self, tool_id: str, inputs: dict[str, Any], *, fresh: bool | None = None) -> ToolRun:
+        """Runs a tool on your key, at the price of the tool's own address (`POST /tools/{id}`).
+
+        A tool that returns rows puts them in `rows`; the rest of its answer is in `data`. A failed
+        run is not charged. The call is never sent twice after a 500 or a lost connection, since
+        it may already have run and been charged.
+
+        Params:
+            `inputs`: the tool's inputs, as `get` lists them. `fresh`: True skips the cache, at the live price.
+
+        Raises BadRequestError (`invalid_input`, the problem in the message), NotFoundError
+        (`tool_not_found`) and ServerError (`tool_failing`: the tool's daily check is failing; not retried).
+
+        Example:
+            from crawl4ai_cloud import Crawl4AI
+
+            run = Crawl4AI().tools.run("scrape", {"url": "https://example.com"})
+            print(run.data["markdown"], run.usage)
+        """
+        headers = {"Crawl4AI-Fresh": "true"} if fresh else None
+        return ToolRun.from_response(
+            self._client._open("POST", _http.tool_path(tool_id), json=inputs, headers=headers, safe=False)
+        )
+
+    def batch(self, tool_id: str, inputs: list[dict[str, Any]]) -> ToolRun:
+        """Runs a tool on many inputs as one background job and returns at once (`POST /tools/batch`).
+        The job is in `data`: wait for it with `wait_scrape_job(run.data["job_id"])`, then read it
+        with `get_scrape_job_results`. A tool with no batch raises BadRequestError. Never sent
+        twice after a 500 or a lost connection, so a job is never started twice.
+
+        Example:
+            from crawl4ai_cloud import Crawl4AI
+
+            client = Crawl4AI()
+            run = client.tools.batch("scrape", [{"url": "https://example.com"}, {"url": "https://example.org"}])
+            client.wait_scrape_job(run.data["job_id"])
+            for item in client.get_scrape_job_results(run.data["job_id"]):
+                print(item.url, item.ok)
+        """
+        fields = {"tool": tool_id, "inputs": inputs}
+        return ToolRun.from_response(self._client._open("POST", "/tools/batch", json=fields, safe=False))
+
+
+class AsyncTools:
+    """The Toolkit for `AsyncCrawl4AI`, reached as `client.tools`. The methods are the ones of `Tools`,
+    each awaited.
+
+    Example:
+        import asyncio
+        from crawl4ai_cloud import AsyncCrawl4AI
+
+        async def main():
+            async with AsyncCrawl4AI() as client:
+                print((await client.tools.find("youtube")).tools[0].id)
+
+        asyncio.run(main())
+    """
+
+    def __init__(self, client: AsyncCrawl4AI) -> None:
+        self._client = client
+
+    async def find(
+        self,
+        q: str | None = None,
+        *,
+        kind: Literal["pages", "search", "people", "sites"] | None = None,
+        source: str | None = None,
+        status: Literal["verified", "beta", "failing"] | None = None,
+        essential: bool | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> ToolList:
+        """Lists the tools. See `Tools.find`."""
+        params = _http.body(
+            q=q, kind=kind, source=source, status=status, essential="true" if essential else None, limit=limit, cursor=cursor
+        )
+        response = await self._client._open("GET", "/tools", params=params, keyless=True)
+        return ToolList.from_dict(_http.parse(response.content, "/tools"))
+
+    async def get(self, tool_id: str) -> Tool:
+        """One tool in full. See `Tools.get`."""
+        path = _http.tool_path(tool_id)
+        return Tool.from_dict(_http.parse((await self._client._open("GET", path, keyless=True)).content, path))
+
+    async def estimate(self, tool_id: str, inputs: dict[str, Any]) -> ToolEstimate:
+        """What a run would cost. See `Tools.estimate`."""
+        path = _http.tool_path(tool_id, "/estimate")
+        return ToolEstimate.from_dict(_http.parse((await self._client._open("POST", path, json=inputs)).content, path))
+
+    async def run(self, tool_id: str, inputs: dict[str, Any], *, fresh: bool | None = None) -> ToolRun:
+        """Runs a tool. See `Tools.run`."""
+        headers = {"Crawl4AI-Fresh": "true"} if fresh else None
+        return ToolRun.from_response(
+            await self._client._open("POST", _http.tool_path(tool_id), json=inputs, headers=headers, safe=False)
+        )
+
+    async def batch(self, tool_id: str, inputs: list[dict[str, Any]]) -> ToolRun:
+        """Runs a tool on many inputs as one background job. See `Tools.batch`."""
+        fields = {"tool": tool_id, "inputs": inputs}
+        return ToolRun.from_response(await self._client._open("POST", "/tools/batch", json=fields, safe=False))

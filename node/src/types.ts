@@ -93,20 +93,27 @@ export interface ScrapeJobRetry extends Costs {
   usage?: Record<string, unknown>;
 }
 
-/** One web result. `source` is `gg` or `gs` for a live result, `index` for the Crawl4AI index. */
+/**
+ * One web result. `source` is `gg` or `gs` for a live result, `index` for the Crawl4AI index.
+ * `markdown` (only with `deep: true`) is the page's text, absent when the page gave none in time.
+ */
 export interface SearchItem {
   title?: string;
   url: string;
   snippet?: string;
   source?: string;
+  markdown?: string;
 }
 
 /**
  * The answer to `search`. `rich` (only with `rich: true`) holds follow-up questions, related
- * queries, an entity card and more, each key only when it was on the page.
+ * queries, an entity card and more, each key only when it was on the page. `deep` and
+ * `usage.deep_pages` (only with `deep: true`) count the pages read and the pages charged.
  */
 export interface SearchResult extends Costs {
   results: SearchItem[];
+  deep?: { launched?: number; got?: number; from_archive?: number; late?: number; ms?: number };
+  usage?: { deep_pages?: number };
   rich?: {
     follow_up_questions?: string[];
     related_queries?: string[];
@@ -174,4 +181,80 @@ export interface ExtractResult extends Costs {
   data?: unknown;
   usage?: Record<string, unknown>;
   ms?: number;
+}
+
+/**
+ * One tool in the list `tools.find` returns: `id`, `name` (`[lead word, rest]`), `source` (the site),
+ * `kind`, `summary`, `cost` (text like `1 cr`), `typical` (a typical run time), `status`,
+ * `essential`, `beta` and `inputs`. `tools.get` gives the tool in full.
+ */
+export interface ToolSummary {
+  id: string;
+  name?: string[];
+  source?: string;
+  kind?: string;
+  summary?: string;
+  cost?: string;
+  typical?: string;
+  status?: "verified" | "beta" | "failing" | (string & {});
+  essential?: boolean;
+  beta?: boolean;
+  /** The input names; a name ending in `*` is required. */
+  inputs?: string[];
+}
+
+/**
+ * One tool in full, from `tools.get`: the fields of `ToolSummary`, except that `name` is
+ * `{ lead, rest }`, `cost` is `{ text, rule }` and each of `inputs` is an object; plus
+ * `description`, `output`, `examples` and `input_schema` (a JSON Schema of the inputs).
+ */
+export interface Tool {
+  id: string;
+  name?: { lead?: string; rest?: string };
+  source?: string;
+  kind?: string;
+  summary?: string;
+  cost?: { text?: string; rule?: string } & Record<string, unknown>;
+  typical?: string;
+  status?: "verified" | "beta" | "failing" | (string & {});
+  essential?: boolean;
+  beta?: boolean;
+  description?: string;
+  inputs?: Array<{ name: string; type?: string; required?: boolean; help?: string; example?: unknown } & Record<string, unknown>>;
+  output?: { fields?: Array<Record<string, unknown>> } & Record<string, unknown>;
+  examples?: Array<{ label?: string; input?: Record<string, unknown> }>;
+  input_schema?: Record<string, unknown>;
+}
+
+/** The answer to `tools.find`: the `tools` on this page, the `total` that match, and `next_cursor` for the next page. */
+export interface ToolList {
+  tools: ToolSummary[];
+  total?: number;
+  next_cursor?: string | null;
+  counts?: Record<string, unknown>;
+}
+
+/**
+ * The answer to `tools.estimate`, with the estimate in `data`: `data.text` says the price in words
+ * (`1 cr`). A tool priced by what the run returns gives `data.rule`; a tool priced by its inputs
+ * gives `data.min` and `data.max`.
+ */
+export interface ToolEstimate {
+  tool?: string;
+  request_id?: string;
+  data?: { text?: string; rule?: string; min?: string; max?: string } & Record<string, unknown>;
+}
+
+/**
+ * The answer to `tools.run`, the same shape for every tool: the `rows` it found (a tool that returns
+ * rows), the rest of its answer in `data`, `usage.credits`, `took_ms` and the `request_id` to quote
+ * when you report a problem.
+ */
+export interface ToolRun extends Costs {
+  tool: string;
+  request_id?: string;
+  took_ms?: number;
+  usage?: { credits?: number | null } & Record<string, unknown>;
+  rows?: Array<Record<string, unknown>>;
+  data?: unknown;
 }
